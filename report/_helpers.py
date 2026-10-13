@@ -12,6 +12,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from experiments.plotting import (  # noqa: E402
+    BLUES,
     ESTIMATOR_COLOR,
     ESTIMATOR_LABEL,
     ESTIMATOR_MARKER,
@@ -19,6 +20,24 @@ from experiments.plotting import (  # noqa: E402
     TEXT_2,
     plt,
 )
+
+__all__ = [
+    "BLUES",
+    "ESTIMATOR_COLOR",
+    "ESTIMATOR_LABEL",
+    "ESTIMATOR_MARKER",
+    "GROUP_ORDER",
+    "REF",
+    "RESULTS",
+    "SERIES",
+    "TEXT_2",
+    "coverage_ratio_panels",
+    "level_sort_key",
+    "plt",
+    "ref",
+    "summary",
+    "tile_side",
+]
 
 RESULTS = ROOT / "experiments" / "results"
 REF = ROOT / "tests" / "data" / "r_reference"
