@@ -1,7 +1,7 @@
 """Regular raster grids described by xarray/rioxarray DataArrays.
 
 The method works with point-support predictions and standard deviations given on a
-regular grid of cells (a raster). :class:`GridSpec` captures the geometry of such a
+regular grid of cells (a raster). `GridSpec` captures the geometry of such a
 grid: cell-centre coordinates, signed cell sizes, the coordinate reference system and
 the mapping from map coordinates to cells. Looking up the cell that contains a point is
 equivalent to ``raster::extract()`` with the default ``"simple"`` method in R.

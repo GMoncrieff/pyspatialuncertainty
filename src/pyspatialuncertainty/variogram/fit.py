@@ -112,7 +112,7 @@ def fit_variogram(
     Parameters
     ----------
     ev
-        Sample variogram, e.g. from :func:`empirical_variogram`.
+        Sample variogram, e.g. from `empirical_variogram`.
     model
         Initial model; its structure types and smoothness parameters are kept fixed.
     fit_method
@@ -249,7 +249,7 @@ def fit_variogram_auto(
     nugget
         Whether to include a nugget structure.
     fit_method
-        gstat weighting scheme (see :func:`fit_variogram`).
+        gstat weighting scheme (see `fit_variogram`).
     range_fractions
         Starting (practical) ranges as fractions of the largest lag distance.
     bounded

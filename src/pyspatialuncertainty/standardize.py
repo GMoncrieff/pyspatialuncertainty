@@ -2,9 +2,9 @@
 
 Step 2 of the method derives the point-support prediction-error standard deviation σ(s)
 from a predictive distribution, for instance by drawing samples from a quantile regression
-forest (:func:`sd_from_samples`) or from a dense set of predicted quantiles
-(:func:`sd_from_quantiles`). Step 3 divides validation errors by σ at the validation
-locations to obtain standardized errors (:func:`standardized_errors`), whose spatial
+forest (`sd_from_samples`) or from a dense set of predicted quantiles
+(`sd_from_quantiles`). Step 3 divides validation errors by σ at the validation
+locations to obtain standardized errors (`standardized_errors`), whose spatial
 correlation is then modelled with a variogram.
 """
 

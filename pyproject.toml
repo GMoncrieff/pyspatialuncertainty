@@ -108,8 +108,8 @@ module = ["rasterio.*", "rioxarray.*", "shapely.*", "quantile_forest.*", "sklear
 ignore_missing_imports = true
 
 [tool.pytest.ini_options]
-testpaths = ["tests"]
-addopts = ["-ra", "--strict-markers", "-m", "not slow"]
+testpaths = ["tests", "src"]
+addopts = ["-ra", "--strict-markers", "--doctest-modules", "-m", "not slow"]
 markers = [
     "slow: statistical tests with many realizations (deselected by default; run with -m slow)",
     "r_parity: compares against the exported reference outputs of the authors' R script",

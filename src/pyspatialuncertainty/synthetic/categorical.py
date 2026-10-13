@@ -51,7 +51,7 @@ def interval_probability(lower: FloatArray, upper: FloatArray) -> FloatArray:
 
 @dataclass(frozen=True)
 class ClassRealization:
-    """One realization of :class:`LatentClassScenario`.
+    """One realization of `LatentClassScenario`.
 
     Attributes
     ----------
@@ -273,7 +273,7 @@ class LatentClassScenario:
     def oracle_correlation(
         self, k: int, *, max_distance: float | None = None, n: int = 80
     ) -> CallableCorrelation:
-        """Interpolated domain-averaged correlogram of class k (see :meth:`average_correlogram`)."""
+        """Interpolated domain-averaged correlogram of class k (see `average_correlogram`)."""
         dmax = max_distance if max_distance is not None else self.layout.extent
         d = np.concatenate([[0.0], np.geomspace(1e-3 * self.layout.cell_size, dmax, n)])
         rho = self.average_correlogram(k, d)

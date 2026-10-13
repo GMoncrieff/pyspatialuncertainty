@@ -89,7 +89,7 @@ def mc_block_variance(
     ----------
     blocks
         Blocks resolved against the validity mask (see
-        :func:`~pyspatialuncertainty.blocks.resolve_blocks`).
+        `resolve_blocks`).
     integrands
         One or more (σ map, correlation function) pairs, evaluated on the same point pairs.
     n_mc

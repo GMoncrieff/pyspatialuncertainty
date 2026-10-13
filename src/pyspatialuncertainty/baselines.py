@@ -2,10 +2,10 @@
 
 Both ignore the actual spatial correlation of the prediction errors:
 
-* :func:`sd_average` averages the point standard deviations over the block. This is what
+* `sd_average` averages the point standard deviations over the block. This is what
   one gets by assuming perfectly correlated errors (ρ ≡ 1); it overestimates the
   uncertainty of block averages (Wadoux & Heuvelink, 2023, Section 1).
-* :func:`sd_independent` assumes that the errors in different cells are uncorrelated
+* `sd_independent` assumes that the errors in different cells are uncorrelated
   (ρ = 0 for distinct cells), giving sqrt(Σ σ_i²) / n; it underestimates the uncertainty,
   increasingly so as the number of cells grows.
 """

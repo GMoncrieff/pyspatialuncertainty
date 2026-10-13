@@ -1,11 +1,11 @@
 """Synthetic scenarios with known truth for continuous maps.
 
-* :class:`ErrorModelScenario` -- a fixed map with spatially correlated prediction errors
+* `ErrorModelScenario` -- a fixed map with spatially correlated prediction errors
   e(s) = σ(s)·ε*(s) of known structure: σ is non-stationary and ε* is stationary with a
   known correlation function (nugget + structured part). This isolates steps 3-8 of the
   method: the true σ is known, can be misspecified on purpose, and the exact variance of
   every block-average error can be computed.
-* :class:`PipelineScenario` -- the design of the authors' R example (a linear trend plus a
+* `PipelineScenario` -- the design of the authors' R example (a linear trend plus a
   Gaussian random field, sampled at n points, mapped with a quantile regression forest and
   10-fold cross-validation), re-implemented in Python. Each realization draws a new field
   and sample, so the whole pipeline (steps 1-8) is evaluated.
@@ -56,7 +56,7 @@ def default_sigma_surface(
 
 @dataclass(frozen=True)
 class ErrorRealization:
-    """One realization of the prediction errors of :class:`ErrorModelScenario`.
+    """One realization of the prediction errors of `ErrorModelScenario`.
 
     Attributes
     ----------
@@ -175,7 +175,7 @@ class ErrorModelScenario:
 
 @dataclass(frozen=True)
 class PipelineRealization:
-    """One realization of :class:`PipelineScenario`.
+    """One realization of `PipelineScenario`.
 
     Attributes
     ----------

@@ -3,10 +3,10 @@
 These are used to check the brute-force (simulation) truth and the Monte Carlo
 integration of the method:
 
-* :func:`exact_block_variance` computes (1/N²) Σ_j Σ_l w_j w_l C(d_jl) over the nodes of a
+* `exact_block_variance` computes (1/N²) Σ_j Σ_l w_j w_l C(d_jl) over the nodes of a
   block on a regular grid by FFT convolution, which is the exact variance of the block mean
   of a field w(s)·S(s) with stationary covariance C for S;
-* :func:`bvn_cdf` and :func:`indicator_block_variance` give the exact variance of the block
+* `bvn_cdf` and `indicator_block_variance` give the exact variance of the block
   fraction of a class in a thresholded latent Gaussian field, using bivariate normal
   probabilities computed with Owen's T function.
 """
@@ -128,7 +128,7 @@ def indicator_block_variance(
     The latent variable at node j is standard normal after standardisation; node j belongs to
     the class when ``lower[j] < Y_j ≤ upper[j]``. The block fraction is the mean of the class
     indicators (or of the class probabilities given a latent structured component; see
-    :class:`~pyspatialuncertainty.synthetic.categorical.LatentClassScenario`).
+    `LatentClassScenario`).
 
     Parameters
     ----------

@@ -47,7 +47,7 @@ class VariogramCorrelation:
 
 @dataclass(frozen=True)
 class CallableCorrelation:
-    """Wraps a user-supplied callable as a :class:`CorrelationFunction`."""
+    """Wraps a user-supplied callable as a `CorrelationFunction`."""
 
     func: Callable[[FloatArray], ArrayLike]
 
@@ -62,13 +62,13 @@ def from_variogram(model: VariogramModel) -> VariogramCorrelation:
 
 
 def as_correlation(obj: object, *, check: bool = True) -> CorrelationFunction:
-    """Coerce a variogram model or a callable to a :class:`CorrelationFunction`.
+    """Coerce a variogram model or a callable to a `CorrelationFunction`.
 
     Parameters
     ----------
     obj
-        A :class:`~pyspatialuncertainty.variogram.VariogramModel` (converted with
-        :func:`from_variogram`) or any callable mapping distances to correlations.
+        A `VariogramModel` (converted with
+        `from_variogram`) or any callable mapping distances to correlations.
     check
         Sanity-check the function: ρ(0) must be 1 and ρ(h) must lie in [−1, 1] on a few
         test distances. Violations raise ``ValueError``.

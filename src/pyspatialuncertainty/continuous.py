@@ -64,7 +64,7 @@ class BlockUncertainty:
         Parameters
         ----------
         columns
-            Columns of :attr:`table` to include (default: predictions, SDs and intervals).
+            Columns of `table` to include (default: predictions, SDs and intervals).
         coarse
             For tiles, return one value per tile on the coarse grid of tile centres instead
             of mapping block values back onto the cells of the original grid.
@@ -125,7 +125,7 @@ def aggregate_continuous(
         callable or a variogram model fitted to the standardized errors (converted with
         ρ(h) = (sill − γ(h)) / sill).
     blocks
-        Blocks to aggregate over (see :mod:`pyspatialuncertainty.blocks`).
+        Blocks to aggregate over (see `pyspatialuncertainty.blocks`).
     prediction
         Point predictions on the same grid; needed for block predictions, totals and
         intervals.

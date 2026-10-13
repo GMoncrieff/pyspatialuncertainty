@@ -8,18 +8,18 @@ maps, together with a per-class analogue for maps of class probabilities.
 The method in eight steps (Section 4.1 of the paper):
 
 1. quantify the point-support prediction uncertainty (e.g. a quantile regression forest);
-2. compute the prediction-error standard deviation σ(s) (:func:`sd_from_samples`,
-   :func:`sd_from_quantiles`);
-3. standardize validation errors by σ (:func:`standardized_errors`);
+2. compute the prediction-error standard deviation σ(s) (`sd_from_samples`,
+   `sd_from_quantiles`);
+3. standardize validation errors by σ (`standardized_errors`);
 4. model the correlation of the standardized errors with a variogram
-   (:func:`empirical_variogram`, :func:`fit_variogram`, :func:`vgm`);
+   (`empirical_variogram`, `fit_variogram`, `vgm`);
 5. - 6. integrate σ(s)σ(u)ρ(|s − u|) over each block by Monte Carlo
-   (:func:`aggregate_continuous`);
+   (`aggregate_continuous`);
 7. scale the variance by |B|² for block totals;
 8. report standard deviations and prediction intervals.
 
-For maps of calibrated class probabilities, :func:`indicator_errors`,
-:func:`fit_class_variograms` and :func:`aggregate_categorical` apply the same procedure per
+For maps of calibrated class probabilities, `indicator_errors`,
+`fit_class_variograms` and `aggregate_categorical` apply the same procedure per
 class to the indicator errors I_k − p_k with σ_k = sqrt(p_k(1 − p_k)).
 """
 

@@ -279,20 +279,20 @@ def fit_class_variograms(
     Parameters
     ----------
     errors
-        Output of :func:`indicator_errors`.
+        Output of `indicator_errors`.
     model
         Initial model(s): one model for all classes, a mapping per class, or ``None`` to
         select automatically among nugget + exponential/spherical/Gaussian models
-        (:func:`~pyspatialuncertainty.variogram.fit_variogram_auto`).
+        (`fit_variogram_auto`).
     cutoff, width, estimator
-        Passed to :func:`~pyspatialuncertainty.variogram.empirical_variogram`.
+        Passed to `empirical_variogram`.
     fit_method
         gstat weighting scheme for the fit.
 
     Returns
     -------
     dict
-        Class label → :class:`ClassVariogram`.
+        Class label → `ClassVariogram`.
     """
     out: dict[Hashable, ClassVariogram] = {}
     for cls in errors["class"].unique(maintain_order=True).to_list():
@@ -345,7 +345,7 @@ class ClassAreaUncertainty:
         self, columns: Sequence[str] | None = None, *, coarse: bool = False
     ) -> xr.Dataset:
         """Results as an xarray Dataset with a ``class`` dimension (see
-        :meth:`~pyspatialuncertainty.continuous.BlockUncertainty.to_xarray`)."""
+        `to_xarray`)."""
         cols = (
             list(columns)
             if columns is not None

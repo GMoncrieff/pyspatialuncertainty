@@ -1,12 +1,12 @@
 """Exact simulation of stationary Gaussian random fields on regular grids.
 
-:class:`CirculantEmbedding` implements the circulant embedding method (Dietrich & Newsam,
+`CirculantEmbedding` implements the circulant embedding method (Dietrich & Newsam,
 1997; Wood & Chan, 1994): the covariance matrix of the grid is embedded in a larger
 block-circulant matrix whose eigenvalues are obtained by one FFT. If all eigenvalues are
 non-negative (the embedding grid is enlarged until they are), fields drawn this way have
 *exactly* the requested covariance. Each complex FFT yields two independent realizations.
 
-:func:`cholesky_sample` draws fields by Cholesky decomposition of the covariance matrix and
+`cholesky_sample` draws fields by Cholesky decomposition of the covariance matrix and
 is used for small grids and to cross-check the FFT sampler.
 """
 

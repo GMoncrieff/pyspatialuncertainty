@@ -13,7 +13,7 @@ With partial sill c and range parameter a, the semivariance for h > 0 is:
 * ``Ste``: as ``Mat`` with h/a replaced by 2·√κ·h/a (M. Stein's parameterisation).
 
 Every structure has γ(0) = 0; a nugget therefore only applies to strictly positive lags.
-A :class:`VariogramModel` is a sum (nested model) of such structures.
+A `VariogramModel` is a sum (nested model) of such structures.
 """
 
 from __future__ import annotations
@@ -142,10 +142,10 @@ class Structure:
 
 @dataclass(frozen=True)
 class VariogramModel:
-    """A nested variogram model: the sum of one or more :class:`Structure` objects.
+    """A nested variogram model: the sum of one or more `Structure` objects.
 
-    Models are usually built with :func:`vgm` or the convenience constructors
-    (:func:`Nugget`, :func:`Exponential`, ...) and combined with ``+``::
+    Models are usually built with `vgm` or the convenience constructors
+    (`Nugget`, `Exponential`, ...) and combined with ``+``::
 
         model = vgm(0.46, "Exp", 2, nugget=0.05) + vgm(0.08, "Sph", 15) + vgm(0.06, "Exp", 60)
     """

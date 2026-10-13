@@ -1,0 +1,643 @@
+---
+title: "Uncertainty of spatial averages and totals"
+subtitle: "A Python implementation of Wadoux & Heuvelink (2023): parity with the authors' R script, verification on synthetic truth, and ablations"
+date: today
+format:
+  html:
+    embed-resources: true
+    toc: true
+    toc-depth: 2
+    number-sections: true
+    theme: cosmo
+    fig-format: png
+    fig-dpi: 120
+    code-fold: true
+    code-summary: "code"
+    page-layout: article
+execute:
+  echo: false
+  warning: false
+jupyter: python3
+---
+
+```{python}
+#| label: setup
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path.cwd()))
+import numpy as np
+import polars as pl
+import xarray as xr
+from IPython.display import Markdown, display
+
+import pyspatialuncertainty as psu
+from _helpers import (ESTIMATOR_COLOR, ESTIMATOR_LABEL, ESTIMATOR_MARKER, GROUP_ORDER, RESULTS, SERIES,
+                      TEXT_2, BLUES, coverage_ratio_panels, level_sort_key, plt, ref, summary, tile_side)
+
+S = summary()
+pl.Config.set_tbl_hide_dataframe_shape(True)
+pl.Config.set_float_precision(3)
+pl.Config.set_tbl_hide_column_data_types(True)
+
+def get(exp, factor="baseline", level="baseline", estimator="method", group=None, cls=None, col="cov_90"):
+    d = S.filter(pl.col("experiment") == exp, pl.col("factor") == factor, pl.col("level") == level,
+                 pl.col("estimator") == estimator)
+    if group is not None:
+        d = d.filter(pl.col("group") == group)
+    if cls is not None:
+        d = d.filter(pl.col("class") == cls)
+    return float(d[col][0])
+
+def pct(x):
+    return f"{100 * x:.0f} %"
+```
+
+```{python}
+#| label: parity-numbers
+summ = dict(zip(*ref("summary.csv").to_dict(as_series=False).values()))
+hm = ref("mc_highm.csv").row(0, named=True)
+grid_r = ref("grid.csv")
+c = np.sort(grid_r["x1"].unique().to_numpy())
+as_da = lambda col: xr.DataArray(grid_r[col].to_numpy().reshape(100, 100), coords={"y": c, "x": c}, dims=("y", "x"))
+sd_r = np.sqrt(as_da("predVarRF"))
+model_r = psu.VariogramModel.from_table(ref("variogram_model.csv"))
+G = psu.GridSpec.from_dataarray(sd_r)
+sdv = G.values(sd_r)
+box_r = psu.resolve_blocks(psu.blocks.box(0, 0, 100, 100, G), np.isfinite(sdv))
+integrand_r = psu.Integrand(sdv, psu.from_variogram(model_r))
+py_high = psu.mc_block_variance(box_r, [integrand_r], n_mc=1_000_000, seed=14106)
+py_var, py_mcse = float(py_high.variance[0, 0]), float(py_high.mcse[0, 0])
+
+pairs = ref("mc_pairs.csv")
+x1, y1, x2, y2 = (pairs[k].to_numpy() for k in ("x1", "y1", "x2", "y2"))
+integ_py = sdv[G.flat_index_of(x1, y1)] * sdv[G.flat_index_of(x2, y2)] * model_r.correlation(np.hypot(x1 - x2, y1 - y2))
+max_integrand_diff = float(np.max(np.abs(integ_py - pairs["integrand"].to_numpy())))
+pt = ref("pt_all.csv")
+std_py = (pt["y"] - pt["predRF"]) / pt["predVarRF"].sqrt()
+max_std_diff = float((std_py - pt["stdErrRF"]).abs().max())
+ev_r = psu.empirical_variogram(pt, "stdErrRF", "x1", "x2")
+sv_r = ref("sample_variogram.csv")
+max_gamma_rel = float(np.max(np.abs(ev_r.gamma / sv_r["gamma"].to_numpy() - 1)))
+vl = ref("variogram_line.csv")
+max_rho_diff = float(np.max(np.abs(model_r.correlation(vl["dist"].to_numpy()) - vl["correlation"].to_numpy())))
+z_script = (py_var - summ["var_average"]) / np.hypot(summ["mcse_script"], py_mcse)
+z_high = (py_var - hm["var_average"]) / np.hypot(hm["mcse"], py_mcse)
+```
+
+# Summary {.unnumbered}
+
+This report documents `pyspatialuncertainty`, a Python implementation of the Monte Carlo
+method of [Wadoux & Heuvelink (2023)](https://doi.org/10.1111/2041-210X.14106). The
+method estimates the uncertainty of spatial averages and totals of maps. The report also
+covers a per-class extension for maps of calibrated class probabilities. Its main findings:
+
+**Parity with the authors' R script.**
+
+- The R script was run unchanged apart from two RStudio-only lines, and its
+  intermediates were exported.
+- On those inputs, the Python standardized errors, sample variogram and correlogram all
+  match R. So does the integrand on the script's own 1,000 Monte Carlo pairs, to within
+  `{python} f"{max_integrand_diff:.0e}"`.
+- Python's Monte Carlo estimate of the block variance with m = 10⁶ pairs is
+  `{python} f"{py_var:.5f}"` ± `{python} f"{py_mcse:.5f}"`. R gives
+  `{python} f"{hm['var_average']:.5f}"` ± `{python} f"{hm['mcse']:.5f}"` with m = 10⁶ and
+  `{python} f"{summ['var_average']:.5f}"` with the script's m = 1,000. The differences are
+  `{python} f"{abs(z_high):.1f}"` and `{python} f"{abs(z_script):.1f}"` combined Monte
+  Carlo standard errors.
+
+**Verification on synthetic truth (continuous maps).**
+
+- The scenario has known non-stationary σ and known correlated errors. With the true σ
+  and correlation, the Monte Carlo estimate matches the exact block SD (median ratio
+  `{python} f"{get('continuous', estimator='oracle', group='tile_8', col='ratio_exact_median'):.3f}"`
+  for 8 × 8-cell blocks).
+- In that oracle case, 90 % intervals cover the truth
+  `{python} pct(get('continuous', estimator='oracle', group='tile_8'))` of the time for
+  8 × 8 blocks.
+- With a correlogram *fitted* to 300 validation errors, coverage is
+  `{python} pct(get('continuous', group='tile_8'))` for 8 × 8 blocks and
+  `{python} pct(get('continuous', group='tile_128'))` for the whole domain. For large
+  blocks, errors in the long-range part of the fitted correlogram dominate.
+
+**The two naive alternatives fail as the paper warns.**
+
+- Averaging point SDs overstates the block SD by up to
+  `{python} f"{get('continuous', estimator='naive_avg', group='tile_128', col='ratio_median'):.1f}"`
+  times, at the domain scale.
+- Assuming independent errors understates it by a factor of up to
+  `{python} f"{1 / get('continuous', estimator='naive_indep', group='tile_128', col='ratio_median'):.0f}"`,
+  and 90 % intervals then cover only
+  `{python} pct(get('continuous', estimator='naive_indep', group='tile_128'))`.
+
+**The method carries any error in σ straight into the result.** The correlogram is
+normalised by its sill, so the method trusts σ for scale. Scaling σ by c scales the block
+SD by c. Coverage falls to
+`{python} pct(get('continuous', factor='sd_scale', level='0.5', group='tile_8'))` for
+c = 0.5 and rises to
+`{python} pct(get('continuous', factor='sd_scale', level='2.0', group='tile_8'))` for
+c = 2. The fitted sill of the standardized errors (≈ 1/c²) is the diagnostic. In the
+authors' example it is 0.65.
+
+The **categorical** and **pipeline** results are in @sec-categorical and @sec-pipeline.
+
+# Methods
+
+## The method of Wadoux & Heuvelink (2023)
+
+Let ε(s) be the point-support prediction error of a map. For a block *B* (Eq. 7 of the
+paper),
+
+$$
+\operatorname{var}\Big(\frac{1}{|B|}\int_B \varepsilon(s)\,ds\Big)
+ = \frac{1}{|B|^2}\int_B\int_B \sigma(s)\,\sigma(u)\,\rho(|s-u|)\,ds\,du .
+$$
+
+The two ingredients are:
+
+- **σ(s)**, the point-support prediction-error SD. It comes from the predictive
+  distribution of any mapping model, e.g. a quantile regression forest (QRF).
+- **ρ(h)**, the correlation function of the *standardized* errors ε/σ. It comes from a
+  variogram fitted to standardized cross-validation errors, using
+  ρ(h) = (sill − γ(h))/sill.
+
+The double integral equals E[σ(S)σ(U)ρ(|S − U|)] for independent uniform points S, U in
+*B*. It is estimated by averaging over *m* pairs, with m = 10,000 in the paper and 1,000
+in the R script. The variance of the block total is |B|² times that of the block average,
+and normal prediction intervals follow from the central limit theorem.
+
+## Categorical extension
+
+For class *k* with calibrated probability $p_k$ and indicator $I_k$, the procedure is the
+same as above:
+
+1. **Error and SD.** The error is $e_k = I_k - p_k$, with
+   $\sigma_k = \sqrt{p_k(1-p_k)}$.
+2. **Correlogram.** One correlogram is fitted per class to the standardized errors
+   $e_k/\sigma_k$ at validation points.
+3. **Integral.** The integral is evaluated as above, with all classes sharing the same
+   point pairs.
+4. **Predictions.** The expected fraction is the block mean of $p_k$, and the expected
+   area is $|B|$ times that. Intervals are clipped to [0, 1].
+
+Probabilities that do not sum to one, or that are exactly 0 or 1, are rejected. Only
+marginal per-class uncertainty is modelled.
+
+## Implementation
+
+| Component | Choice |
+|---|---|
+| Variograms | Own implementation following gstat. Models `Nug`, `Exp`, `Sph`, `Gau`, `Mat`, `Ste` use gstat's range parameter. Sample variograms use cutoff = 0.33333 × bbox diagonal and width = cutoff/15, with upper-inclusive lag classes. WLS uses `fit.method` 1/2/6/7. |
+| Automatic fitting (experiments) | Nug + {Exp, Sph, Gau}, 4 starting ranges each, best weighted SSE, `fit.method = 7`. Practical range is bounded by 2× the largest lag and partial sills by 2× the largest γ̂. |
+| Blocks | Tiles, zones, polygons, boxes or the whole domain. Polygons and boxes are sampled exactly (rejection sampling, as `spatstat::runifpoint`). σ is looked up in the containing cell, as `raster::extract`. |
+| Monte Carlo | Paired estimator with MCSE = sd(g)/√m. One RNG stream per block. Pairs are shared across classes and estimators. |
+| Data structures | xarray/rioxarray rasters (projected CRS), Polars 2.0.0 tables. |
+
+## Verification design
+
+**Parity with R.** The authors' script
+([`AlexandreWadoux/UncertaintySpatialAggregation@934481f`](https://github.com/AlexandreWadoux/UncertaintySpatialAggregation))
+ran under R 4.3.3 with gstat 2.1-1, ranger 0.16.0, raster 3.6-26 and spatstat 3.0-7. A
+harness re-drew the script's Monte Carlo pairs from the saved RNG state and asserted
+bit-identical results. Python consumed the exported intermediates, because R's random
+streams and ranger cannot be reproduced exactly in Python.
+
+**Synthetic truth.** The method targets the *continuous* block average. The synthetic
+fields are therefore simulated on a sub-grid with 4 × 4 nodes per map cell, and the true
+block value is the sub-grid mean. Point-scale nugget variation enters only the point
+observations, which are the validation data. Fields are drawn exactly by FFT circulant
+embedding.
+
+| Scenario | Truth | What the method receives |
+|---|---|---|
+| Continuous errors (`ErrorModelScenario`) | 128 × 128 cells. Errors σ(s)·ε*(s), with σ ∈ [0.5, 2] non-stationary and ε* = nugget + exponential(range *a*). Baseline: *a* = 8 cells, nugget 0.25. | c·σ, and 300 validation errors |
+| Class maps (`LatentClassScenario`) | A latent μ(s) + η(s) thresholded into 3 classes (≈ 60/30/10 %). η = nugget + exponential noise. Signal-to-noise Var(μ)/Var(η). | Exactly calibrated p (optionally temperature-scaled), and 300 validation labels |
+| Full pipeline (`PipelineScenario`) | The R script's design: trend + GRF 5·exp(−h/25) on [0, 100]², 200 samples. | Ranger-style QRF predictions and σ, and 10-fold CV errors |
+
+**Estimators.** The same four are compared throughout:
+
+- `method`: the paper's procedure with a fitted correlogram;
+- `oracle`: the true σ and correlation; for class maps, the exact domain-averaged
+  correlogram of the standardized indicator errors;
+- `naive_avg`: the mean of σ over the block;
+- `naive_indep`: √Σσ²/n.
+
+**Metrics.** For each configuration, 500 realizations (baseline) or 300 (ablations) were
+run. The metrics are:
+
+- **coverage** of 50/80/90/95 % normal intervals, with 95 % CIs from a cluster bootstrap
+  over realizations;
+- **SD ratio**, the RMS of the estimated SD over realizations divided by the true SD. The
+  true SD is the brute-force RMS of the block errors, and is also checked against the
+  exact value where one is available.
+
+# Parity with the authors' R script
+
+```{python}
+#| label: tbl-parity
+#| tbl-cap: "Python against R on the R script's own exported inputs."
+pl.DataFrame({
+    "quantity": ["standardized CV errors (step 3)", "sample variogram γ, gstat defaults (step 4)",
+                 "correlogram of the nested model (step 4)", "integrand on the script's 1,000 MC pairs (step 6)",
+                 "block variance: R script, m = 1,000", "block variance: R, m = 10⁶",
+                 "block variance: Python, m = 10⁶"],
+    "result": [f"max |diff| = {max_std_diff:.1e}", f"max rel. diff = {max_gamma_rel:.1e} (same pair counts)",
+               f"max |diff| = {max_rho_diff:.1e}", f"max |diff| = {max_integrand_diff:.1e}",
+               f"{summ['var_average']:.5f} ± {summ['mcse_script']:.5f}",
+               f"{hm['var_average']:.5f} ± {hm['mcse']:.5f}", f"{py_var:.5f} ± {py_mcse:.5f}"],
+})
+```
+
+The R script's results for the whole domain:
+
+- block mean prediction `{python} f"{summ['mean_predRF']:.3f}"`;
+- block SD `{python} f"{np.sqrt(summ['var_average']):.4f}"`;
+- 90 % interval `{python} f"[{summ['pi90_lower_z164']:.3f}, {summ['pi90_upper_z164']:.3f}]"`,
+  which contains the true mean `{python} f"{summ['mean_y']:.3f}"`.
+
+The same function in Python, given the same inputs, reproduces these within Monte Carlo
+error. The test suite also checks gstat's fitted parameters for `fit.method` 1, 6 and 7
+(agreement to about 10⁻⁴) and gstat's `variogramLine` for every supported model.
+
+```{python}
+#| label: fig-replicates
+#| fig-cap: "Sampling distribution of the R script's Monte Carlo estimator (m = 1,000), from 200 replicates in R and 200 in Python on the same inputs. The vertical line is the m = 10⁶ estimate."
+r_reps = ref("mc_replicates.csv")["var_average"].to_numpy()
+py_reps = np.array([psu.mc_block_variance(box_r, [integrand_r], n_mc=1000, seed=s).variance[0, 0] for s in range(200)])
+fig, ax = plt.subplots(figsize=(7, 3))
+bins = np.linspace(min(r_reps.min(), py_reps.min()), max(r_reps.max(), py_reps.max()), 30)
+ax.hist(r_reps, bins=bins, color=SERIES[1], alpha=0.55, label="R (spatstat + raster + gstat)")
+ax.hist(py_reps, bins=bins, color=SERIES[0], alpha=0.55, label="Python (pyspatialuncertainty)")
+ax.axvline(hm["var_average"], color=TEXT_2, lw=1.5)
+ax.set_xlabel("estimated variance of the block-mean error")
+ax.set_ylabel("replicates")
+ax.legend()
+plt.show()
+```
+
+```{python}
+#| label: fig-mc
+#| fig-cap: "Monte Carlo convergence on the R example (200 replicates per m). The band spans the 5th to 95th percentile of the estimated block SD; the dashed line is the m = 10⁶ value."
+mc = pl.read_parquet(RESULTS / "mc_convergence.parquet").with_columns(pl.col("var_average").sqrt().alias("sd"))
+agg = mc.group_by("m").agg(pl.col("sd").quantile(0.05).alias("lo"), pl.col("sd").median().alias("med"),
+                          pl.col("sd").quantile(0.95).alias("hi")).sort("m")
+fig, ax = plt.subplots(figsize=(7, 3))
+ax.fill_between(agg["m"], agg["lo"], agg["hi"], color=SERIES[0], alpha=0.2, linewidth=0)
+ax.plot(agg["m"], agg["med"], color=SERIES[0], marker="o")
+ax.axhline(np.sqrt(hm["var_average"]), color=TEXT_2, ls="--", lw=1)
+for m_mark, lab in [(1000, "R script"), (10000, "paper")]:
+    ax.axvline(m_mark, color="#c9c8c2", lw=1)
+    ax.annotate(lab, (m_mark, agg["hi"].max()), ha="center", va="bottom", color=TEXT_2, fontsize=8)
+ax.set_xscale("log")
+ax.set_xlabel("Monte Carlo pairs m")
+ax.set_ylabel("SD of the block mean")
+plt.show()
+rel90 = {int(r["m"]): (r["hi"] - r["lo"]) / 2 / r["med"] for r in agg.iter_rows(named=True)}
+```
+
+The spread of the Monte Carlo estimate shrinks as $1/\sqrt{m}$. Half the 90 % range of
+the estimated SD is `{python} f"{100 * rel90[1000]:.1f}"` % of its value at the script's
+m = 1,000, and `{python} f"{100 * rel90[10000]:.1f}"` % at the paper's m = 10,000. The
+package reports the Monte Carlo standard error with every estimate, so users can choose
+m deliberately.
+
+# Verification on synthetic truth
+
+## Continuous maps {#sec-continuous}
+
+```{python}
+#| label: fig-cont-baseline
+#| fig-cap: "Continuous baseline (500 realizations). Left: coverage of 90 % intervals by block size, with cluster-bootstrap 95 % bands. Right: estimated over true SD."
+d = S.filter(pl.col("experiment") == "continuous", pl.col("factor") == "baseline")
+fig = coverage_ratio_panels(d, ["method", "oracle", "naive_avg", "naive_indep"], "Continuous errors, baseline")
+plt.show()
+```
+
+```{python}
+#| label: tbl-cont-levels
+#| tbl-cap: "Continuous baseline: coverage at four nominal levels, pooled over block sizes, plus the RMS of the z-scores (1 if the SDs are right)."
+d = S.filter(pl.col("experiment") == "continuous", pl.col("factor") == "baseline")
+(d.group_by("estimator").agg([pl.col(f"cov_{l}").mean().alias(f"{l} %") for l in ("50", "80", "90", "95")]
+                            + [pl.col("z_rms_pooled").median().alias("z RMS (median over groups)")])
+   .sort("estimator"))
+```
+
+**Oracle.** With the true σ and correlation, the Monte Carlo estimate agrees with the
+exact block SD, computed by FFT on the sub-grid, at every block size. The coverage of
+every interval level matches its nominal value. So the integration, the block geometry
+and the definition of the truth are mutually consistent.
+
+**Fitted correlogram.** The method is close to nominal for blocks up to about 16 × 16
+cells. Coverage falls for the largest blocks, to
+`{python} pct(get('continuous', group='tile_128'))` for the whole domain, even though the
+median SD ratio stays near 1
+(`{python} f"{get('continuous', group='tile_128', col='ratio_median'):.2f}"`). The cause
+is variability, not bias. The domain-scale variance depends on the long-range part of the
+correlogram, which 300 validation points pin down poorly. In some realizations the SD is
+much too small, and those intervals miss.
+
+## Class probability maps {#sec-categorical}
+
+```{python}
+#| label: fig-cat-baseline
+#| fig-cap: "Categorical baseline (500 realizations), one row per class: coverage of 90 % intervals and SD ratio by block size."
+cat_ok = (RESULTS / "categorical_blocks.parquet").exists()
+if cat_ok:
+    for cls, name in zip(["a", "b", "c"], ["class a (≈ 60 %)", "class b (≈ 30 %)", "class c (≈ 10 %, rare)"]):
+        d = S.filter(pl.col("experiment") == "categorical", pl.col("factor") == "baseline", pl.col("class") == cls)
+        coverage_ratio_panels(d, ["method", "oracle", "naive_avg", "naive_indep"], name)
+        plt.show()
+```
+
+```{python}
+#| label: cat-numbers
+if cat_ok:
+    cm = {cls: get("categorical", group="tile_8", cls=cls) for cls in "abc"}
+    co = {cls: get("categorical", estimator="oracle", group="tile_8", cls=cls) for cls in "abc"}
+    cr = {cls: get("categorical", group="tile_8", cls=cls, col="ratio_median") for cls in "abc"}
+```
+
+For 8 × 8-cell blocks, the fitted method's 90 % intervals have this coverage:
+
+| | class a (≈ 60 %) | class b (≈ 30 %) | class c (≈ 10 %, rare) |
+|---|---|---|---|
+| method coverage | `{python} pct(cm['a'])` | `{python} pct(cm['b'])` | `{python} pct(cm['c'])` |
+| method SD ratio | `{python} f"{cr['a']:.2f}"` | `{python} f"{cr['b']:.2f}"` | `{python} f"{cr['c']:.2f}"` |
+| oracle coverage | `{python} pct(co['a'])` | `{python} pct(co['b'])` | `{python} pct(co['c'])` |
+
+The oracle uses the exact domain-averaged correlogram. Comparing it with the truth shows
+how much is lost by assuming a *stationary* correlation of the standardized indicator
+errors. For a thresholded latent field, that correlation really depends on the
+probabilities at both locations. Comparing the method with the oracle shows the
+additional cost of estimating one correlogram per class from 300 binary observations. For
+the rare class, few validation points carry a positive indicator, so its correlogram is
+the hardest to estimate.
+
+## The R example as a full pipeline {#sec-pipeline}
+
+```{python}
+#| label: fig-pipeline
+#| fig-cap: "The R script's design re-run 200 times (new field, sample and ranger-style QRF each time). Coverage of 90 % intervals (left) and SD ratio (right) for the whole domain and for tiles of 10, 25 and 50 nodes."
+pipe_ok = (RESULTS / "pipeline_blocks.parquet").exists()
+if pipe_ok:
+    d = S.filter(pl.col("experiment") == "pipeline", pl.col("factor") == "baseline")
+    groups = ["tile_10", "tile_25", "tile_50", "domain"]
+    xlabels = ["10 × 10", "25 × 25", "50 × 50", "domain"]
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(9.2, 3.4), constrained_layout=True)
+    for est in ["method", "method_nested", "naive_avg", "naive_indep"]:
+        e = d.filter(pl.col("estimator") == est)
+        vals = [e.filter(pl.col("group") == g) for g in groups]
+        kw = dict(color=ESTIMATOR_COLOR[est], marker=ESTIMATOR_MARKER[est], label=ESTIMATOR_LABEL[est])
+        ax1.plot(range(4), [float(v["cov_90"][0]) for v in vals], **kw)
+        ax2.plot(range(4), [float(v["ratio_median"][0]) for v in vals], **kw)
+    ax1.axhline(0.9, color=TEXT_2, ls="--", lw=1)
+    ax2.axhline(1.0, color=TEXT_2, ls="--", lw=1)
+    ax2.set_yscale("log")
+    for ax in (ax1, ax2):
+        ax.set_xticks(range(4)); ax.set_xticklabels(xlabels)
+    ax1.set_ylim(0, 1.02); ax1.set_ylabel("coverage of the 90 % PI"); ax2.set_ylabel("estimated / true SD")
+    ax1.legend(fontsize=7.5, loc="lower left")
+    plt.show()
+    fits_p = pl.read_parquet(RESULTS / "pipeline_fits.parquet").filter(pl.col("factor") == "baseline")
+    sev = float(fits_p["std_error_var"].median())
+```
+
+```{python}
+#| label: pipe-text
+if pipe_ok:
+    display(Markdown(
+        "In the Python port, the median variance of the standardized CV errors is "
+        f"{sev:.2f}. For the authors' own realization it is {float(pt['stdErrRF'].var()):.2f}, "
+        "and their hand-set variogram sill is 0.65. Ranger's quantile regression forest makes "
+        "σ too wide by a factor of about 1/√0.6 ≈ 1.3. The faithful method normalises the "
+        "variogram, so it carries this over-dispersion into the block SDs.\n\n"
+        "Correlogram fitting pulls in the opposite direction. The automatic single-structure fit "
+        "rarely captures the weak long-range correlation of the QRF errors, which dominates the "
+        "variance of large block means. The R script's nested model, with its ranges fixed and "
+        "its sills fitted, leaves room for that correlation. Coverage for the whole domain is "
+        f"{pct(get('pipeline', group='domain'))} with the automatic fit and "
+        f"{pct(get('pipeline', estimator='method_nested', group='domain'))} with the nested fit; "
+        f"for 10 × 10-node tiles it is {pct(get('pipeline', group='tile_10'))} and "
+        f"{pct(get('pipeline', estimator='method_nested', group='tile_10'))}."
+    ))
+```
+
+# Ablations
+
+Each ablation changes one factor relative to the baseline. The panels show the fitted
+method for four block sizes. The tables give coverage pooled over all tiles for every
+estimator, including the naive baselines.
+
+```{python}
+#| label: ablation-helpers
+SIZES = ["tile_2", "tile_8", "tile_32", "tile_128"]
+SIZE_LABEL = {"tile_2": "2 × 2", "tile_8": "8 × 8", "tile_32": "32 × 32", "tile_128": "128 × 128 (domain)"}
+
+def ablation_figure(exp, factors, baseline_values, labels, cls=None, title=None):
+    fig, axes = plt.subplots(2, len(factors), figsize=(2.6 * len(factors) + 0.6, 5.2), constrained_layout=True,
+                             squeeze=False)
+    for j, factor in enumerate(factors):
+        d = S.filter(pl.col("experiment") == exp, pl.col("estimator") == "method",
+                     pl.col("factor").is_in([factor, "baseline"]))
+        if cls is not None:
+            d = d.filter(pl.col("class") == cls)
+        d = d.with_columns(pl.when(pl.col("factor") == "baseline").then(pl.lit(str(baseline_values[factor])))
+                           .otherwise(pl.col("level")).alias("lv"))
+        levels = sorted(d["lv"].unique().to_list(), key=level_sort_key)
+        cat = not all(l.replace(".", "", 1).isdigit() for l in levels)
+        xs = {l: (i if cat else float(l)) for i, l in enumerate(levels)}
+        for k, g in enumerate(SIZES):
+            e = d.filter(pl.col("group") == g)
+            ys = {r["lv"]: (r["cov_90"], r["ratio_median"]) for r in e.iter_rows(named=True)}
+            x = [xs[l] for l in levels if l in ys]
+            axes[0, j].plot(x, [ys[l][0] for l in levels if l in ys], color=SERIES[k], marker="o", label=SIZE_LABEL[g])
+            axes[1, j].plot(x, [ys[l][1] for l in levels if l in ys], color=SERIES[k], marker="o")
+        axes[0, j].axhline(0.9, color=TEXT_2, ls="--", lw=1)
+        axes[1, j].axhline(1.0, color=TEXT_2, ls="--", lw=1)
+        axes[0, j].set_ylim(0, 1.02)
+        axes[1, j].set_yscale("log")
+        axes[0, j].set_title(labels[factor], fontsize=9.5)
+        axes[1, j].set_xlabel(labels[factor], fontsize=8.5)
+        if cat:
+            for ax in axes[:, j]:
+                ax.set_xticks(list(xs.values())); ax.set_xticklabels(levels)
+        elif factor in ("range", "n_validation", "snr", "n_train"):
+            for ax in axes[:, j]:
+                ax.set_xscale("log")
+    axes[0, 0].set_ylabel("coverage of 90 % PI")
+    axes[1, 0].set_ylabel("estimated / true SD")
+    axes[0, 0].legend(fontsize=7.5, title="block", title_fontsize=7.5, loc="lower left")
+    if title:
+        fig.suptitle(title, fontsize=11, fontweight="bold", x=0.01, ha="left")
+    return fig
+
+def pooled_table(exp, factor, baseline_value, cls=None):
+    d = S.filter(pl.col("experiment") == exp, pl.col("factor").is_in([factor, "baseline"]),
+                 pl.col("group").str.starts_with("tile_"))
+    if cls is not None:
+        d = d.filter(pl.col("class") == cls)
+    d = d.with_columns(pl.when(pl.col("factor") == "baseline").then(pl.lit(f"{baseline_value} (baseline)"))
+                       .otherwise(pl.col("level")).alias(factor))
+    t = d.group_by(factor, "estimator").agg(pl.col("cov_90").mean()).pivot(on="estimator", index=factor, values="cov_90")
+    return t.sort(pl.col(factor).map_elements(lambda s: level_sort_key(s.split(" ")[0]), return_dtype=pl.Float64))
+```
+
+## Continuous maps
+
+```{python}
+#| label: fig-abl-cont
+#| fig-cap: "Continuous ablations (fitted method). Top: coverage of 90 % intervals; bottom: estimated over true SD. σ scale = σ handed to the method divided by the true σ; range = exponential range parameter in cells; nugget = share of the standardized-error variance; n = number of validation points."
+base_c = {"sd_scale": 1.0, "range": 8.0, "nugget": 0.25, "n_validation": 300}
+lab_c = {"sd_scale": "σ scale c", "range": "correlation range (cells)", "nugget": "nugget share",
+         "n_validation": "validation points n"}
+ablation_figure("continuous", ["sd_scale", "range", "nugget", "n_validation"], base_c, lab_c)
+plt.show()
+```
+
+```{python}
+#| label: tbl-abl-sd
+#| tbl-cap: "Misspecified σ (continuous): coverage of 90 % intervals pooled over tiles. 'constant' passes a constant σ (the domain mean) instead of the true non-stationary σ."
+pl.concat([pooled_table("continuous", "sd_scale", 1.0),
+           pooled_table("continuous", "sd_shape", "true").rename({"sd_shape": "sd_scale"})], how="vertical_relaxed")
+```
+
+```{python}
+#| label: tbl-abl-cont-rest
+#| tbl-cap: "Correlation range and nugget (continuous): coverage of 90 % intervals pooled over tiles."
+pl.concat([pooled_table("continuous", "range", 8.0).rename({"range": "level"}).with_columns(pl.lit("range").alias("factor")),
+           pooled_table("continuous", "nugget", 0.25).rename({"nugget": "level"}).with_columns(pl.lit("nugget").alias("factor"))],
+          how="vertical_relaxed").select("factor", "level", "method", "oracle", "naive_avg", "naive_indep")
+```
+
+```{python}
+#| label: cont-abl-numbers
+fits_c = pl.read_parquet(RESULTS / "continuous_fits.parquet")
+sill_by_c = {lv: float(fits_c.filter(pl.col("factor") == "sd_scale", pl.col("level") == lv)["fit_sill"].median())
+             for lv in ["0.5", "2.0"]}
+pure_nug_09 = float((fits_c.filter(pl.col("factor") == "nugget", pl.col("level") == "0.9")["fit_nugget_share"] > 0.99).mean())
+```
+
+**Misspecified σ.** The block SD scales with the σ that the method receives, and coverage
+follows. The fitted sill of the standardized errors reveals the problem: its median is
+`{python} f"{sill_by_c['0.5']:.2f}"` when σ is halved and
+`{python} f"{sill_by_c['2.0']:.2f}"` when σ is doubled, against 1 when calibrated. Passing
+a constant σ in place of the true non-stationary one has a milder effect.
+
+**Correlation range.**
+
+- **Very short ranges (1 cell).** The first lag class of the default sample variogram
+  (cutoff/15 ≈ 4 cells) is too coarse to resolve them. The fitted correlogram is wrong in
+  both directions: too low for the smallest blocks and too high for the largest.
+- **Very long ranges (64 cells, practical range 192 on a 128-cell domain).** The sample
+  variogram never reaches its sill within the cutoff. The sill-normalised correlogram then
+  underestimates the correlation, and large blocks are under-covered.
+
+**Nugget.** With a nugget share of 0.9, `{python} pct(pure_nug_09)` of the fits are pure
+nugget. The paper's continuous integral is then exactly zero, and coverage collapses for
+those realizations. This is a property of the faithful method: a pure-nugget correlogram
+implies that the errors average out completely.
+
+**Number of validation points.** More validation points give better correlograms, and
+coverage moves towards nominal.
+
+## Class probability maps
+
+```{python}
+#| label: fig-abl-cat
+#| fig-cap: "Categorical ablations for the rare class c (fitted method). Temperature T < 1 makes probabilities over-confident, T > 1 under-confident; σ scale multiplies σ_k = sqrt(p(1 − p)); SNR = Var(μ)/Var(η)."
+if cat_ok:
+    base_k = {"temperature": 1.0, "sd_scale": 1.0, "snr": 1.0, "range": 8.0, "nugget": 0.25}
+    lab_k = {"temperature": "temperature T", "sd_scale": "σ scale c", "snr": "signal-to-noise",
+             "range": "latent range (cells)", "nugget": "latent nugget share"}
+    for cls, name in [("a", "class a (≈ 60 %)"), ("c", "class c (≈ 10 %)")]:
+        ablation_figure("categorical", list(base_k), base_k, lab_k, cls=cls, title=name)
+        plt.show()
+```
+
+```{python}
+#| label: tbl-abl-temp
+#| tbl-cap: "Miscalibration by temperature scaling: coverage of 90 % intervals pooled over tiles, and the median bias of the expected class fraction relative to the RMS error (8 × 8 blocks)."
+if cat_ok:
+    rows = []
+    for cls in "abc":
+        t = pooled_table("categorical", "temperature", 1.0, cls=cls).with_columns(pl.lit(cls).alias("class"))
+        b = (S.filter(pl.col("experiment") == "categorical", pl.col("class") == cls, pl.col("estimator") == "method",
+                      pl.col("group") == "tile_8", pl.col("factor").is_in(["temperature", "baseline"]))
+               .with_columns(pl.when(pl.col("factor") == "baseline").then(pl.lit("1.0 (baseline)"))
+                             .otherwise(pl.col("level")).alias("temperature"))
+               .select("temperature", pl.col("bias_over_rmse").alias("bias / RMSE")))
+        rows.append(t.join(b, on="temperature"))
+    display(pl.concat(rows, how="vertical_relaxed").select("class", "temperature", "method", "oracle", "naive_avg",
+                                                            "naive_indep", "bias / RMSE"))
+```
+
+**Miscalibration.** Temperature scaling biases both inputs: the expected fractions and
+σ_k. Over-confident probabilities (T < 1) shrink σ_k = sqrt(p(1 − p)) where the
+probabilities are sharp. Under-confident ones (T > 1) inflate it and also bias the
+expected areas of rare classes upwards. Coverage reflects both effects. As in the
+continuous case, the fitted sill of the standardized indicator errors flags the problem.
+
+**Signal-to-noise, range and nugget.** Higher signal-to-noise gives sharper probabilities,
+so smaller σ_k and fewer validation points near the class boundaries. The latent range
+and nugget act much as in the continuous case, except that the indicator transform makes
+the effective correlation shorter and weaker than the latent correlation.
+
+## The R-example pipeline
+
+```{python}
+#| label: fig-abl-pipe
+#| fig-cap: "Pipeline ablations: share of variance explained by the trend (R² of the trend; the R script has 0.68) and number of sample points."
+if pipe_ok:
+    fig, axes = plt.subplots(1, 2, figsize=(9.2, 3.4), constrained_layout=True)
+    for ax, factor, base_v, lab in [(axes[0], "trend_r2", "0.6756756756756757", "trend R²"),
+                                    (axes[1], "n_train", "200", "sample points n")]:
+        d = S.filter(pl.col("experiment") == "pipeline", pl.col("factor").is_in([factor, "baseline"]),
+                     pl.col("group").is_in(["domain", "tile_25"]))
+        d = d.with_columns(pl.when(pl.col("factor") == "baseline").then(pl.lit(base_v)).otherwise(pl.col("level"))
+                           .cast(pl.Float64).alias("x"))
+        for est in ["method", "method_nested"]:
+            for g, ls in [("tile_25", "-"), ("domain", ":")]:
+                e = d.filter(pl.col("estimator") == est, pl.col("group") == g).sort("x")
+                ax.plot(e["x"], e["cov_90"], color=ESTIMATOR_COLOR[est], marker=ESTIMATOR_MARKER[est], ls=ls,
+                        label=f"{ESTIMATOR_LABEL[est]}, {'25 × 25 tiles' if g == 'tile_25' else 'domain'}")
+        ax.axhline(0.9, color=TEXT_2, ls="--", lw=1)
+        ax.set_ylim(0, 1.02); ax.set_xlabel(lab); ax.set_ylabel("coverage of 90 % PI")
+    axes[0].legend(fontsize=7, loc="lower left")
+    plt.show()
+```
+
+# Discussion and limitations
+
+- **Implementation.** The core computation is right. Given the same inputs, the package
+  reproduces the authors' R script exactly where the computation is deterministic and
+  within Monte Carlo error where it is stochastic. With the true σ and correlation it
+  recovers exact block variances at every scale.
+- **Where the uncertainty comes from.** The method's accuracy in practice depends almost
+  entirely on its inputs: the calibration of σ and the quality of the fitted correlogram.
+  - The sill normalisation in step 4 discards the one statistic that would reveal a
+    mis-scaled σ. Reporting the fitted sill alongside the block SDs is cheap and should be
+    routine.
+  - For large blocks, the weak long-range part of the correlogram dominates, and it is the
+    part a sample variogram estimates worst. Analyst judgement, such as the nested model
+    in the R script, matters.
+- **Nugget and support.** The estimator targets continuous block averages, so a nugget
+  contributes nothing. That is right for micro-scale variation and measurement error. It
+  is not right if the quantity of interest is the mean of a finite set of point values.
+  The synthetic truth used here is consistent with the paper's estimand.
+- **Categorical mode.**
+  - It keeps the continuous machinery but relies on a stationary correlogram of
+    standardized indicator errors. That is an approximation, and its quality depends on
+    class prevalence and the sharpness of the probabilities.
+  - Only marginal per-class uncertainty is provided.
+  - Probabilities must be calibrated. Temperature-scaled (miscalibrated) probabilities
+    distort both the expected areas and their uncertainty.
+- **Scope.** Not covered: geographic coordinates, which need reprojecting; bounded or
+  skewed intervals; and cross-class dependence.
+
+```{python}
+#| label: versions
+import importlib.metadata as md
+display(Markdown("Software: " + ", ".join(f"{p} {md.version(p)}" for p in
+        ["pyspatialuncertainty", "numpy", "scipy", "xarray", "rioxarray", "polars", "shapely", "scikit-learn"])
+        + f". Reference R run: {dict(zip(*ref('manifest.csv').to_dict(as_series=False).values()))['R.version']}."))
+```

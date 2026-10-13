@@ -1,16 +1,16 @@
 """Blocks: the spatial supports over which predictions are averaged or summed.
 
-A :class:`BlockSet` describes one or more blocks on a :class:`~pyspatialuncertainty.grid.GridSpec`:
+A `BlockSet` describes one or more blocks on a `GridSpec`:
 
-* :func:`tiles` -- regular square or rectangular tiles of grid cells (e.g. 10 km × 10 km);
-* :func:`zones` -- blocks defined by a zone raster aligned with the grid;
-* :func:`polygons` -- arbitrary (multi)polygons, e.g. administrative units;
-* :func:`box` -- a single rectangle;
-* :func:`domain` -- the whole mapped area.
+* `tiles` -- regular square or rectangular tiles of grid cells (e.g. 10 km × 10 km);
+* `zones` -- blocks defined by a zone raster aligned with the grid;
+* `polygons` -- arbitrary (multi)polygons, e.g. administrative units;
+* `box` -- a single rectangle;
+* `domain` -- the whole mapped area.
 
 Blocks are purely geometric. Cells without a valid prediction or standard deviation (NaN)
 are removed when the blocks are *resolved* against a validity mask
-(:func:`resolve_blocks`), so that a block B always means "the part of the block that is
+(`resolve_blocks`), so that a block B always means "the part of the block that is
 mapped". The resolved blocks know their area |B| and can draw points uniformly in B, which
 is what the Monte Carlo integration of the method needs (step 6).
 
