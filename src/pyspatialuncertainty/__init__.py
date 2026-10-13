@@ -11,8 +11,9 @@ The method in eight steps (Section 4.1 of the paper):
 2. compute the prediction-error standard deviation σ(s) (`sd_from_samples`,
    `sd_from_quantiles`);
 3. standardize validation errors by σ (`standardized_errors`);
-4. model the correlation of the standardized errors with a variogram
-   (`empirical_variogram`, `fit_variogram`, `vgm`);
+4. model the correlation of the standardized errors (`fit_correlation`: a Gaussian
+   likelihood fit by default, or the paper's WLS variogram fit with ``method="wls"``;
+   also `empirical_variogram`, `fit_variogram`, `vgm`);
 5. - 6. integrate σ(s)σ(u)ρ(|s − u|) over each block by Monte Carlo
    (`aggregate_continuous`);
 7. scale the variance by |B|² for block totals;
@@ -52,9 +53,11 @@ from pyspatialuncertainty.integrate import Integrand, MCResult, mc_block_varianc
 from pyspatialuncertainty.intervals import normal_interval, z_value
 from pyspatialuncertainty.standardize import sd_from_quantiles, sd_from_samples, standardized_errors
 from pyspatialuncertainty.variogram import (
+    CorrelationFit,
     EmpiricalVariogram,
     Exponential,
     Gaussian,
+    LikelihoodFit,
     Matern,
     MaternStein,
     Nugget,
@@ -63,6 +66,8 @@ from pyspatialuncertainty.variogram import (
     VariogramFit,
     VariogramModel,
     empirical_variogram,
+    fit_correlation,
+    fit_likelihood,
     fit_variogram,
     fit_variogram_auto,
     vgm,
@@ -76,6 +81,7 @@ __all__ = [
     "CallableCorrelation",
     "ClassAreaUncertainty",
     "ClassVariogram",
+    "CorrelationFit",
     "CorrelationFunction",
     "EmpiricalVariogram",
     "Exponential",
@@ -83,6 +89,7 @@ __all__ = [
     "GridError",
     "GridSpec",
     "Integrand",
+    "LikelihoodFit",
     "MCResult",
     "Matern",
     "MaternStein",
@@ -102,6 +109,8 @@ __all__ = [
     "clip_probabilities",
     "empirical_variogram",
     "fit_class_variograms",
+    "fit_correlation",
+    "fit_likelihood",
     "fit_variogram",
     "fit_variogram_auto",
     "from_variogram",

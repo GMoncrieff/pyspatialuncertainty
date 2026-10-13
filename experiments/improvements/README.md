@@ -5,8 +5,13 @@ These experiments test changes to the method that could improve two things:
 - the **coverage** of its prediction intervals;
 - the **accuracy of its block standard deviations (SDs)**.
 
-They are run on simulated maps with a known truth. Nothing here changes the package. The
-candidate estimators live in `candidates.py`, and any adoption would be a separate change.
+They are run on simulated maps with a known truth. The candidate estimators live in
+`candidates.py`; nothing here is used by the package.
+
+**Outcome:** the zero-mean likelihood fit (`ml_zero_mean`) was adopted as the package
+default for step 4, in `fit_correlation` and `fit_class_variograms`. The package
+implementation (`fit_likelihood`) gives the same fits as `candidates.likelihood_fit`.
+`method="wls"` keeps the paper's procedure, which reproduces the authors' R script.
 
 ## How the variants are judged
 

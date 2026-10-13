@@ -49,9 +49,8 @@ import pyspatialuncertainty as psu
 # steps 2-3: σ maps and standardized validation errors (Polars in, Polars out)
 val = psu.standardized_errors(cv_table, observed="obs", predicted="pred", sd="sd")
 
-# step 4: gstat-compatible sample variogram and WLS fit
-ev = psu.empirical_variogram(val, "std_error", "x", "y")
-fit = psu.fit_variogram(ev, psu.vgm(0.5, "Exp", 10, nugget=0.1))
+# step 4: correlation of the standardized errors (Gaussian likelihood fit, mean zero)
+fit = psu.fit_correlation(val)
 print(fit.model.sill)  # ≈ 1 if σ is calibrated; the method trusts σ for scale
 
 # steps 5-8: Monte Carlo integration over blocks
@@ -71,12 +70,29 @@ res.to_xarray()  # block results as rasters
 `sd_map` and `pred_map` are xarray DataArrays on a regular grid, in a projected CRS or
 with no CRS.
 
+### Step 4: likelihood fit by default, the paper's WLS fit on request
+
+By default, `fit_correlation` fits a nugget plus an exponential, spherical or Gaussian
+structure by Gaussian maximum likelihood, with the mean of the standardized errors fixed
+at zero. The paper's procedure is still available with `method="wls"`: a gstat-compatible
+sample variogram (`empirical_variogram`) fitted by weighted least squares
+(`fit_variogram_auto`, or `fit_variogram` from a starting model). It reproduces the
+authors' R script.
+
+In simulations with known truth (`experiments/improvements/`), the likelihood fit
+brought the coverage of block intervals closer to the nominal level in 10 of 11 scenarios
+and never moved it further away. It also roughly halved the error of block SDs. The gain
+was largest for large blocks. Its cost
+grows with the cube of the number of validation points: about 1 s for 300 points and 30 s
+for 1,500. Above 2,000 points it warns; there, subsample the points or use
+`method="wls"`.
+
 ## Class probability maps
 
 ```python
 psu.validate_probabilities(prob_map)  # sums to one, strictly inside (0, 1)
 errors = psu.indicator_errors(val_table, {"forest": "p_forest", "grass": "p_grass"}, label="label")
-fits = psu.fit_class_variograms(errors)  # one correlogram per class
+fits = psu.fit_class_variograms(errors)  # one correlogram per class (likelihood fit)
 res = psu.aggregate_categorical(
     prob_map,
     {c: f.model for c, f in fits.items()},

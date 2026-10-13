@@ -129,10 +129,25 @@ def test_fit_class_variograms_auto_and_given_model() -> None:
     fits = psu.fit_class_variograms(e)
     assert set(fits) == {"a", "b", "c"}
     for f in fits.values():
-        # independent errors with calibrated probabilities: sill near 1
+        # default: zero-mean likelihood fit
+        assert isinstance(f.fit, psu.LikelihoodFit)
+        assert f.fit.mean == "zero"
+        # independent errors with calibrated probabilities: sill near 1, no correlation
         assert 0.5 < f.model.sill < 1.6
+        assert np.all(f.model.correlation(np.array([5.0, 20.0])) < 0.15)
+    wls = psu.fit_class_variograms(e, method="wls")
+    for cls, f in wls.items():
+        assert isinstance(f.fit, psu.VariogramFit)
+        assert f.model == psu.fit_variogram_auto(f.empirical).model
+        np.testing.assert_array_equal(f.empirical.gamma, fits[cls].empirical.gamma)
+    # a starting model implies the WLS fit
     fixed = psu.fit_class_variograms(e, model=psu.vgm(1.0, "Exp", 10.0, nugget=0.1))
+    assert all(isinstance(f.fit, psu.VariogramFit) for f in fixed.values())
     assert all(len(f.model) == 2 for f in fixed.values())
+    with pytest.raises(ValueError, match="method='wls'"):
+        psu.fit_class_variograms(
+            e, method="likelihood", model=psu.vgm(1.0, "Exp", 10.0, nugget=0.1)
+        )
 
 
 def test_aggregate_categorical_basic_properties() -> None:
