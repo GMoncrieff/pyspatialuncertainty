@@ -4,7 +4,7 @@ All variants of a scenario see the same realizations, the same validation data a
 same Monte Carlo point pairs, so their differences are paired. For each scenario, variant,
 class and block, the script records:
 
-* coverage of the 90 % interval;
+* coverage of the 90 % normal interval, prediction ± 1.645·SD;
 * the RMS ratio and the log-ratio of the estimated SD to the true SD;
 * the share of realizations with a badly wrong SD (ratio < 0.5 or > 2).
 
@@ -32,7 +32,7 @@ import polars as pl
 
 import pyspatialuncertainty as psu
 from experiments.common import chunks, run_parallel
-from experiments.improvements import candidates as C
+from experiments.improvements import candidates as cand
 from pyspatialuncertainty.continuous import block_means
 from pyspatialuncertainty.synthetic import (
     ErrorModelScenario,
@@ -42,16 +42,14 @@ from pyspatialuncertainty.synthetic import (
 )
 
 RESULTS = Path(__file__).resolve().parent / "results"
-LEVEL = 0.90
-Z = 1.6448536269514722
+Z = 1.6448536269514722  # two-sided 90 % normal quantile
 SEED = 20261013
 N_MC = 10_000
-N_BOOT = 40
 N_WORKERS = 4
 TILES = (2, 4, 8, 16, 32, 64, 128)
 
-BASE_CONT = {"range": 8.0, "nugget": 0.25, "n_validation": 300, "sd_scale": 1.0}
-BASE_CAT = {"range": 8.0, "nugget": 0.25, "n_validation": 300, "temperature": 1.0}
+BASE_CONT = {"model": "Exp", "range": 8.0, "nugget": 0.25, "n_validation": 300, "sd_scale": 1.0}
+BASE_CAT = {"model": "Exp", "range": 8.0, "nugget": 0.25, "n_validation": 300, "temperature": 1.0}
 SCENARIOS: dict[str, dict[str, dict[str, Any]]] = {
     "continuous": {
         "baseline": BASE_CONT,
@@ -59,6 +57,8 @@ SCENARIOS: dict[str, dict[str, dict[str, Any]]] = {
         "range64": BASE_CONT | {"range": 64.0},
         "nugget0.9": BASE_CONT | {"nugget": 0.9},
         "sd_scale0.75": BASE_CONT | {"sd_scale": 0.75},
+        # same practical range as the baseline, but not the exponential model
+        "spherical": BASE_CONT | {"model": "Sph", "range": 24.0},
         "pipeline": {"pipeline": True},
     },
     "categorical": {
@@ -69,8 +69,7 @@ SCENARIOS: dict[str, dict[str, dict[str, Any]]] = {
     },
 }
 FIT_VARIANTS = ["current", "wls_npairs", "wls_cressie", "exp_only", "sigma_weighted", "reml"]
-CONT_VARIANTS = [*FIT_VARIANTS, "rescale", "boot_spread", "boot_bc"]
-CAT_VARIANTS = [*FIT_VARIANTS, "pooled", "rescale", "boot_spread", "boot_bc", "beta"]
+# plus "rescale" (both modes) and "pooled" (categorical)
 
 
 # ---------------------------------------------------------------------------
@@ -80,7 +79,7 @@ CAT_VARIANTS = [*FIT_VARIANTS, "pooled", "rescale", "boot_spread", "boot_bc", "b
 
 def latent_model(params: dict[str, Any]) -> psu.VariogramModel:
     nug = float(params["nugget"])
-    return psu.vgm(1.0 - nug, "Exp", float(params["range"]), nugget=nug)
+    return psu.vgm(1.0 - nug, params["model"], float(params["range"]), nugget=nug)
 
 
 def grid_setup(mode: str, params: dict[str, Any]) -> dict[str, Any]:
@@ -120,42 +119,34 @@ def grid_setup(mode: str, params: dict[str, Any]) -> dict[str, Any]:
 
 
 def fit_models(
-    p: C.Pairs, x: np.ndarray, y: np.ndarray, e: np.ndarray, s: np.ndarray
+    p: cand.Pairs, x: np.ndarray, y: np.ndarray, e: np.ndarray, s: np.ndarray
 ) -> dict[str, psu.VariogramModel]:
     z = e / s
-    ev = C.matheron(p, z)
+    ev = cand.matheron(p, z)
     return {
-        "current": C.wls(ev),
-        "wls_npairs": C.wls(ev, fit_method=1),
-        "wls_cressie": C.wls(ev, fit_method=2),
-        "exp_only": C.wls(ev, models=("Exp",)),
-        "sigma_weighted": C.wls(C.sigma_weighted(p, e, s)),
-        "reml": C.reml(x, y, z),
+        "current": cand.wls(ev),
+        "wls_npairs": cand.wls(ev, fit_method=1),
+        "wls_cressie": cand.wls(ev, fit_method=2),
+        "exp_only": cand.wls(ev, models=("Exp",)),
+        "sigma_weighted": cand.wls(cand.sigma_weighted(p, e, s)),
+        "reml": cand.reml(x, y, z),
     }
 
 
-def assemble(
-    variances: dict[str, np.ndarray], boot: np.ndarray, rescale: float
-) -> dict[str, tuple[np.ndarray, np.ndarray, np.ndarray]]:
-    """(sd, lower, upper) on the error scale for every variant from the MC variances."""
-    out: dict[str, tuple[np.ndarray, np.ndarray, np.ndarray]] = {}
-    for name, v in variances.items():
-        sd = np.sqrt(np.maximum(v, 0.0))
-        out[name] = (sd, -Z * sd, Z * sd)
-    cur = np.maximum(variances["current"], 0.0)
-    sd = np.sqrt(cur * rescale)
-    out["rescale"] = (sd, -Z * sd, Z * sd)
-    boot = np.maximum(boot, 0.0)
-    for name, power in (("boot_spread", 1.0), ("boot_bc", 2.0)):
-        vb = C.recentre(boot, cur, power)
-        q = C.mixture_halfwidth(vb, LEVEL)
-        out[name] = (np.sqrt(vb.mean(axis=0)), -q, q)
+def block_sds(variances: dict[str, np.ndarray], rescale: float) -> dict[str, np.ndarray]:
+    """Block SDs of every variant from the MC variances, plus the rescaled current SD.
+
+    ``rescale`` is the mean squared standardized validation error, which estimates
+    (true σ / σ handed to the method)².
+    """
+    out = {name: np.sqrt(np.maximum(v, 0.0)) for name, v in variances.items()}
+    out["rescale"] = out["current"] * np.sqrt(rescale)
     return out
 
 
 def realization_continuous(
     setup: dict[str, Any], rng: np.random.Generator
-) -> tuple[np.ndarray, dict[str, tuple[np.ndarray, ...]]]:
+) -> tuple[np.ndarray, dict[str, np.ndarray]]:
     sc, resolved = setup["sc"], setup["resolved"]
     if "bs" in setup:  # pipeline
         real = sc.simulate(rng)
@@ -176,23 +167,16 @@ def realization_continuous(
         sd_map = setup["sd_user"]
         s = sd_map[v["cell"].to_numpy()]
         err = setup["eb"].block_means(real.error_sub)
-    p = C.pairs(x, y)
-    models = fit_models(p, x, y, e, s)
-    D = C.distance_matrix(x, y)
-    draws = C.gaussian_draws(models["current"], D, N_BOOT, rng)
-    boot_models = [C.wls(C.matheron(p, draws[:, b])) for b in range(N_BOOT)]
-    integrands = [psu.Integrand(sd_map, C.correlation(m)) for m in models.values()]
-    integrands += [psu.Integrand(sd_map, C.correlation(m)) for m in boot_models]
+    models = fit_models(cand.pairs(x, y), x, y, e, s)
+    integrands = [psu.Integrand(sd_map, cand.correlation(m)) for m in models.values()]
     mc = psu.mc_block_variance(resolved, integrands, n_mc=N_MC, seed=rng)
-    nv = len(models)
-    variances = dict(zip(models, mc.variance[:nv], strict=True))
-    res = assemble(variances, mc.variance[nv:], float(np.mean((e / s) ** 2)))
-    return err[None, :], {k: tuple(a[None, :] for a in val) for k, val in res.items()}
+    sds = block_sds(dict(zip(models, mc.variance, strict=True)), float(np.mean((e / s) ** 2)))
+    return err[None, :], {k: v[None, :] for k, v in sds.items()}
 
 
 def realization_categorical(
     setup: dict[str, Any], rng: np.random.Generator
-) -> tuple[np.ndarray, dict[str, tuple[np.ndarray, ...]]]:
+) -> tuple[np.ndarray, dict[str, np.ndarray]]:
     sc, resolved, eb = setup["sc"], setup["resolved"], setup["eb"]
     p_user, sd_user, pred = setup["p_user"], setup["sd_user"], setup["pred"]
     real = sc.simulate(rng)
@@ -200,11 +184,10 @@ def realization_categorical(
     x, y = v["x"].to_numpy(), v["y"].to_numpy()
     cell = v["cell"].to_numpy()
     labels = np.asarray(v["label"].to_list(), dtype=object)
-    p = C.pairs(x, y)
-    D = C.distance_matrix(x, y)
+    p = cand.pairs(x, y)
     K = len(sc.classes)
     per_class: list[dict[str, psu.VariogramModel]] = []
-    zs, rescale, boot_models = [], [], []
+    zs, rescale = [], []
     for k, cls in enumerate(sc.classes):
         pk = p_user[k, cell]
         sk = np.sqrt(pk * (1.0 - pk))
@@ -212,48 +195,31 @@ def realization_categorical(
         per_class.append(fit_models(p, x, y, ek, sk))
         zs.append(ek / sk)
         rescale.append(float(np.mean((ek / sk) ** 2)))
-        latent = C.gaussian_draws(per_class[k]["current"], D, N_BOOT, rng)
-        zb = C.indicator_draws(latent, pk)
-        boot_models.append([C.wls(C.matheron(p, zb[:, b])) for b in range(N_BOOT)])
-    pooled_model = C.wls(C.pooled(p, zs))
+    pooled_model = cand.wls(cand.pooled(p, zs))
     names = [*FIT_VARIANTS, "pooled"]
     integrands = []
     for k in range(K):
         models = per_class[k] | {"pooled": pooled_model}
-        integrands += [psu.Integrand(sd_user[k], C.correlation(models[n])) for n in names]
-        integrands += [psu.Integrand(sd_user[k], C.correlation(m)) for m in boot_models[k]]
+        integrands += [psu.Integrand(sd_user[k], cand.correlation(models[n])) for n in names]
     mc = psu.mc_block_variance(resolved, integrands, n_mc=N_MC, seed=rng)
-    var = mc.variance.reshape(K, len(names) + N_BOOT, -1)
+    var = mc.variance.reshape(K, len(names), -1)
     truth = np.stack([eb.block_means(real.fraction_sub[k]) for k in range(K)])
-    err = truth - pred
-    out: dict[str, list[tuple[np.ndarray, ...]]] = {}
-    for k in range(K):
-        variances = dict(zip(names, var[k, : len(names)], strict=True))
-        res = assemble(variances, var[k, len(names) :], rescale[k])
-        lo, hi = C.beta_bounds(pred[k], np.maximum(variances["current"], 0.0), LEVEL)
-        res["beta"] = (res["current"][0], lo, hi)
-        for name, val in res.items():
-            out.setdefault(name, []).append(val)
-    stacked = {
-        n: tuple(np.stack([t[i] for t in vals]) for i in range(3)) for n, vals in out.items()
-    }
-    return err, stacked
+    per_k = [block_sds(dict(zip(names, var[k], strict=True)), rescale[k]) for k in range(K)]
+    return truth - pred, {n: np.stack([sds[n] for sds in per_k]) for n in per_k[0]}
 
 
 def worker(task: dict[str, Any]) -> dict[str, Any]:
     setup = grid_setup(task["mode"], task["params"])
     fn = realization_continuous if task["mode"] == "continuous" else realization_categorical
     errs: list[np.ndarray] = []
-    res: dict[str, list[list[np.ndarray]]] = {}
+    res: dict[str, list[np.ndarray]] = {}
     for i in range(task["start"], task["stop"]):
         rng = np.random.default_rng([SEED, task["scenario_index"], i])
         err, out = fn(setup, rng)
         errs.append(err)
-        for name, arrs in out.items():
-            res.setdefault(name, [[], [], []])
-            for j in range(3):
-                res[name][j].append(arrs[j])
-    return {"err": np.array(errs), "res": {n: [np.array(a) for a in v] for n, v in res.items()}}
+        for name, sd in out.items():
+            res.setdefault(name, []).append(sd)
+    return {"err": np.array(errs), "res": {n: np.array(v) for n, v in res.items()}}
 
 
 # ---------------------------------------------------------------------------
@@ -263,16 +229,19 @@ def worker(task: dict[str, Any]) -> dict[str, Any]:
 
 def metrics(
     err: np.ndarray,
-    res: dict[str, list[np.ndarray]],
+    res: dict[str, np.ndarray],
     sd_true: np.ndarray,
     groups: tuple[str, ...],
     keys: dict[str, Any],
 ) -> tuple[pl.DataFrame, pl.DataFrame]:
-    """Block-level and (realization, group)-level tables. err: (R, B); sd_true: (B,)."""
+    """Block-level and (realization, group)-level tables.
+
+    err and every SD array in ``res`` have shape (R, B); sd_true has shape (B,).
+    """
     block_rows, real_rows = [], []
     g = np.asarray(groups)
-    for name, (sd, lo, hi) in res.items():
-        covered = (err >= lo) & (err <= hi)
+    for name, sd in res.items():
+        covered = np.abs(err) <= Z * sd
         ratio = sd / sd_true
         logr = np.log(np.maximum(ratio, 1e-3))
         block_rows.append(
@@ -343,10 +312,7 @@ def main() -> None:
         ]
         out = run_parallel(worker, tasks, N_WORKERS)
         err = np.concatenate([o["err"] for o in out])  # (R, K, B)
-        res = {
-            v: [np.concatenate([o["res"][v][j] for o in out]) for j in range(3)]
-            for v in out[0]["res"]
-        }
+        res = {v: np.concatenate([o["res"][v] for o in out]) for v in out[0]["res"]}
         setup = grid_setup(args.mode, params)
         blocks, reals = [], []
         for k in range(err.shape[1]):
@@ -355,7 +321,7 @@ def main() -> None:
             keys = {"mode": args.mode, "scenario": name, "class": cls}
             b, r = metrics(
                 err[:, k, :],
-                {v: [a[:, k, :] for a in arrs] for v, arrs in res.items()},
+                {v: sd[:, k, :] for v, sd in res.items()},
                 sd_t,
                 setup["groups"],
                 keys,

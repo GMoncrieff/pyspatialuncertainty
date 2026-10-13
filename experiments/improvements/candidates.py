@@ -1,4 +1,4 @@
-"""Candidate improvements to steps 4 and 8 of the method (experiment code only).
+"""Candidate improvements to the correlogram step of the method (experiment code only).
 
 The current procedure fits a correlogram in three steps:
 
@@ -6,8 +6,8 @@ The current procedure fits a correlogram in three steps:
 2. an automatic, bounded WLS fit of Nug + Exp/Sph/Gau with ``fit.method = 7``;
 3. ρ = (sill − γ)/sill.
 
-Its intervals are normal, prediction ± z·SD. Each candidate here replaces one of these
-parts and keeps the rest. Nothing in this module is used by the package.
+Each candidate here replaces one of these parts and keeps the rest; intervals stay normal,
+prediction ± z·SD. Nothing in this module is used by the package.
 """
 
 from __future__ import annotations
@@ -17,7 +17,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 
 import numpy as np
-from scipy import linalg, optimize, special, stats
+from scipy import linalg, optimize, special
 
 import pyspatialuncertainty as psu
 from pyspatialuncertainty.variogram.empirical import GSTAT_CUTOFF_FRACTION, EmpiricalVariogram
@@ -202,94 +202,3 @@ def reml(
     eta = float(special.expit(theta[0]))
     a = math.exp(theta[1])
     return psu.vgm((1.0 - eta) * s2, code, a, nugget=eta * s2)  # type: ignore[arg-type]
-
-
-# ---------------------------------------------------------------------------
-# Parametric bootstrap of the fitted correlogram
-# ---------------------------------------------------------------------------
-
-
-def gaussian_draws(
-    model: VariogramModel, D: np.ndarray, n_draws: int, rng: np.random.Generator
-) -> np.ndarray:
-    """Draws (n, n_draws) of unit-variance Gaussian errors with the model's correlogram."""
-    R = np.asarray(correlation(model)(D), dtype=np.float64)
-    R[np.diag_indices_from(R)] = 1.0
-    try:
-        L = np.linalg.cholesky(R + 1e-9 * np.eye(R.shape[0]))
-    except np.linalg.LinAlgError:
-        w, V = np.linalg.eigh(R)
-        L = V * np.sqrt(np.clip(w, 0.0, None))
-    return L @ rng.standard_normal((R.shape[0], n_draws))
-
-
-def indicator_draws(latent: np.ndarray, p: np.ndarray) -> np.ndarray:
-    """Standardized indicator errors from latent Gaussian draws (Gaussian copula).
-
-    I = 1[Φ(Z) < p], so the marginals are exactly Bernoulli(p). The latent correlation is
-    the fitted indicator correlation, which slightly understates the indicator correlation.
-    """
-    ind = (special.ndtr(latent) < p[:, None]).astype(np.float64)
-    s = np.sqrt(p * (1.0 - p))[:, None]
-    out: np.ndarray = (ind - p[:, None]) / s
-    return out
-
-
-# ---------------------------------------------------------------------------
-# Intervals
-# ---------------------------------------------------------------------------
-
-
-def mixture_halfwidth(variances: np.ndarray, level: float = 0.90) -> np.ndarray:
-    """Half-width q of the central interval of a mixture of N(0, v_b), per block.
-
-    ``variances`` has shape (n_draws, n_blocks); q solves mean_b P(|N(0, v_b)| ≤ q) = level.
-    """
-    sd = np.sqrt(np.maximum(variances, 0.0))
-    lo = np.zeros(sd.shape[1])
-    hi = 10.0 * sd.max(axis=0) + 1e-300
-    for _ in range(80):
-        mid = 0.5 * (lo + hi)
-        with np.errstate(divide="ignore", invalid="ignore"):
-            cdf = np.where(sd > 0, 2.0 * special.ndtr(mid / sd) - 1.0, 1.0)
-        cov = cdf.mean(axis=0)
-        below = cov < level
-        lo = np.where(below, mid, lo)
-        hi = np.where(below, hi, mid)
-    return hi
-
-
-def recentre(boot: np.ndarray, estimate: np.ndarray, power: float) -> np.ndarray:
-    """Rescale bootstrap variances so that their median is estimate^power / median^(power−1).
-
-    power = 1 keeps only the bootstrap spread around the estimate ("spread"). power = 2 also
-    removes the multiplicative bias that the bootstrap reveals ("bias-corrected"): the
-    median becomes estimate² / median(boot).
-    """
-    med = np.median(boot, axis=0)
-    with np.errstate(divide="ignore", invalid="ignore"):
-        factor = np.where(med > 0, (estimate / med) ** power, 1.0)
-    return boot * np.where(np.isfinite(factor), factor, 1.0)
-
-
-def beta_bounds(
-    mean: np.ndarray, var: np.ndarray, level: float = 0.90
-) -> tuple[np.ndarray, np.ndarray]:
-    """Error-scale bounds (lower − mean, upper − mean) of a beta interval for a fraction.
-
-    The beta distribution has the given mean and variance. Where that is impossible, the
-    normal interval is used.
-    """
-    z = stats.norm.ppf(0.5 + level / 2.0)
-    sd = np.sqrt(np.maximum(var, 0.0))
-    lo, hi = -z * sd, z * sd
-    m = np.clip(mean, 1e-12, 1 - 1e-12)
-    ok = (var > 0) & (var < m * (1.0 - m))
-    if np.any(ok):
-        k = m[ok] * (1.0 - m[ok]) / var[ok] - 1.0
-        a, b = m[ok] * k, (1.0 - m[ok]) * k
-        lo = lo.copy()
-        hi = hi.copy()
-        lo[ok] = stats.beta.ppf(0.5 - level / 2.0, a, b) - mean[ok]
-        hi[ok] = stats.beta.ppf(0.5 + level / 2.0, a, b) - mean[ok]
-    return lo, hi
