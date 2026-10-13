@@ -63,10 +63,9 @@ def test_temperature_scaling_properties(raw: np.ndarray, temperature: float) -> 
     q = psu.temperature_scale(p, temperature, class_dim=1)
     np.testing.assert_allclose(q.sum(axis=1), 1.0, rtol=1e-12)
     assert np.all((q > 0) & (q < 1))
-    # order of classes within a location is preserved
-    np.testing.assert_array_equal(
-        np.argsort(p, axis=1, kind="stable"), np.argsort(q, axis=1, kind="stable")
-    )
+    # order of classes within a location is preserved (ties may swap by rounding)
+    order = np.argsort(p, axis=1, kind="stable")
+    assert np.all(np.diff(np.take_along_axis(q, order, axis=1), axis=1) >= -1e-12)
     # sharper for T < 1, flatter for T > 1
     if temperature < 1:
         assert np.all(q.max(axis=1) >= p.max(axis=1) - 1e-12)
