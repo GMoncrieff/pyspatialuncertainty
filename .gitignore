@@ -1,0 +1,35 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+*.egg-info/
+dist/
+build/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+coverage.xml
+htmlcov/
+.hypothesis/
+
+# Quarto / Jupyter
+docs/_site/
+docs/.quarto/
+docs/reference/
+docs/_freeze/
+report/.quarto/
+report/report_files/
+report/_freeze/
+*.quarto_ipynb
+.ipynb_checkpoints/
+objects.json
+_sidebar.yml
+
+# R
+.Rhistory
+.RData
+Rplots.pdf
+
+# Experiments scratch
+experiments/results/_scratch/

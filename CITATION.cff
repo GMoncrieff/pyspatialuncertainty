@@ -1,0 +1,24 @@
+cff-version: 1.2.0
+message: >-
+  If you use this software, please cite the paper that introduced the method,
+  and optionally the software itself.
+title: "pyspatialuncertainty: uncertainty of spatial averages and totals of maps"
+type: software
+license: MIT
+repository-code: "https://github.com/GMoncrieff/pyspatialuncertainty"
+authors:
+  - name: "GMoncrieff"
+preferred-citation:
+  type: article
+  title: "Uncertainty of spatial averages and totals of natural resource maps"
+  authors:
+    - family-names: Wadoux
+      given-names: "Alexandre M. J.-C."
+    - family-names: Heuvelink
+      given-names: "Gerard B. M."
+  journal: "Methods in Ecology and Evolution"
+  volume: 14
+  start: 1320
+  end: 1332
+  year: 2023
+  doi: "10.1111/2041-210X.14106"
