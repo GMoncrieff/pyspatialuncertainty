@@ -31,7 +31,16 @@ mode gives the uncertainty of expected class fractions and class areas.
 
 ## Installation
 
-The package uses [uv](https://docs.astral.sh/uv/) and needs Python ≥ 3.12.
+The package needs Python ≥ 3.12. It is not on PyPI; install the 1.0.0 release straight
+from GitHub:
+
+```bash
+uv add "pyspatialuncertainty @ git+https://github.com/GMoncrieff/pyspatialuncertainty@v1.0.0"
+# or: pip install "git+https://github.com/GMoncrieff/pyspatialuncertainty@v1.0.0"
+```
+
+Add the `ml` extra (`pyspatialuncertainty[ml] @ git+...`) for the synthetic QRF pipeline.
+To work on the package itself, clone it:
 
 ```bash
 git clone https://github.com/GMoncrieff/pyspatialuncertainty

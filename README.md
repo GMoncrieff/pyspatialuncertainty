@@ -24,12 +24,21 @@ machine learning such as quantile regression forests.
 
 ## Installation
 
-The package needs Python ≥ 3.12 and uses [uv](https://docs.astral.sh/uv/):
+The package needs Python ≥ 3.12. It is not on PyPI; install the 1.0.0 release straight
+from GitHub:
+
+```bash
+uv add "pyspatialuncertainty @ git+https://github.com/GMoncrieff/pyspatialuncertainty@v1.0.0"
+# or: pip install "git+https://github.com/GMoncrieff/pyspatialuncertainty@v1.0.0"
+```
+
+Add the `ml` extra (`pyspatialuncertainty[ml] @ git+...`) for the synthetic QRF pipeline.
+To work on the package itself, clone it:
 
 ```bash
 git clone https://github.com/GMoncrieff/pyspatialuncertainty
 cd pyspatialuncertainty
-uv sync                 # add --all-extras for the synthetic QRF pipeline
+uv sync --all-extras
 ```
 
 ## Continuous maps (steps 1–8 of Section 4.1)
