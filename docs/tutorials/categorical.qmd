@@ -40,7 +40,7 @@ noise distribution is known, the class probabilities given μ are exactly calibr
 ```{python}
 sc = LatentClassScenario(layout=SubGridLayout(n=80, cell_size=1.0, f=2),
                          latent=psu.vgm(0.75, "Exp", 6.0, nugget=0.25),
-                         classes=("forest", "grassland", "wetland"), n_validation=400)
+                         classes=("forest", "grassland", "wetland"), n_validation=800)
 probs = sc.probabilities()          # DataArray (class, y, x), sums to one
 real = sc.simulate(np.random.default_rng(7))
 
