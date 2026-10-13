@@ -37,7 +37,7 @@ import xarray as xr
 from pyspatialuncertainty._types import BoolArray, FloatArray, IntArray
 from pyspatialuncertainty.grid import GridSpec
 
-BlockKind = Literal["tiles", "zones", "polygons", "domain"]
+BlockKind = Literal["tiles", "zones", "polygons", "domain", "custom"]
 Sampling = Literal["geometry", "cells"]
 
 
