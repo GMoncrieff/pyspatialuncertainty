@@ -17,6 +17,10 @@ The method in eight steps (Section 4.1 of the paper):
    (:func:`aggregate_continuous`);
 7. scale the variance by |B|² for block totals;
 8. report standard deviations and prediction intervals.
+
+For maps of calibrated class probabilities, :func:`indicator_errors`,
+:func:`fit_class_variograms` and :func:`aggregate_categorical` apply the same procedure per
+class to the indicator errors I_k − p_k with σ_k = sqrt(p_k(1 − p_k)).
 """
 
 from importlib.metadata import version as _version
@@ -24,6 +28,17 @@ from importlib.metadata import version as _version
 from pyspatialuncertainty import blocks
 from pyspatialuncertainty.baselines import sd_average, sd_independent
 from pyspatialuncertainty.blocks import BlockSet, ResolvedBlock, resolve_blocks
+from pyspatialuncertainty.categorical import (
+    ClassAreaUncertainty,
+    ClassVariogram,
+    ProbabilityError,
+    aggregate_categorical,
+    clip_probabilities,
+    fit_class_variograms,
+    indicator_errors,
+    temperature_scale,
+    validate_probabilities,
+)
 from pyspatialuncertainty.continuous import BlockUncertainty, aggregate_continuous
 from pyspatialuncertainty.correlation import (
     CallableCorrelation,
@@ -59,6 +74,8 @@ __all__ = [
     "BlockSet",
     "BlockUncertainty",
     "CallableCorrelation",
+    "ClassAreaUncertainty",
+    "ClassVariogram",
     "CorrelationFunction",
     "EmpiricalVariogram",
     "Exponential",
@@ -70,6 +87,7 @@ __all__ = [
     "Matern",
     "MaternStein",
     "Nugget",
+    "ProbabilityError",
     "ResolvedBlock",
     "Spherical",
     "Structure",
@@ -77,13 +95,17 @@ __all__ = [
     "VariogramFit",
     "VariogramModel",
     "__version__",
+    "aggregate_categorical",
     "aggregate_continuous",
     "as_correlation",
     "blocks",
+    "clip_probabilities",
     "empirical_variogram",
+    "fit_class_variograms",
     "fit_variogram",
     "fit_variogram_auto",
     "from_variogram",
+    "indicator_errors",
     "mc_block_variance",
     "normal_interval",
     "resolve_blocks",
@@ -92,6 +114,8 @@ __all__ = [
     "sd_from_samples",
     "sd_independent",
     "standardized_errors",
+    "temperature_scale",
+    "validate_probabilities",
     "vgm",
     "z_value",
 ]
