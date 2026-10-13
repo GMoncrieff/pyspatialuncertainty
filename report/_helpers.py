@@ -5,7 +5,6 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
-import numpy as np
 import polars as pl
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -13,7 +12,6 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from experiments.plotting import (  # noqa: E402
-    BLUES,
     ESTIMATOR_COLOR,
     ESTIMATOR_LABEL,
     ESTIMATOR_MARKER,
@@ -42,22 +40,38 @@ def tile_side(group: str) -> int:
     return int(group.split("_")[1])
 
 
-def coverage_ratio_panels(df: pl.DataFrame, estimators: list[str], title: str, level: str = "90") -> plt.Figure:
+def coverage_ratio_panels(
+    df: pl.DataFrame, estimators: list[str], title: str, level: str = "90"
+) -> plt.Figure:
     """Two panels against block size: coverage of the PI and ratio of estimated to true SD."""
     fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(9.2, 3.4), constrained_layout=True)
     tiles = df.filter(pl.col("group").str.starts_with("tile_"))
     for est in estimators:
-        d = tiles.filter(pl.col("estimator") == est).with_columns(
-            pl.col("group").map_elements(tile_side, return_dtype=pl.Int64).alias("side")
-        ).sort("side")
+        d = (
+            tiles.filter(pl.col("estimator") == est)
+            .with_columns(
+                pl.col("group").map_elements(tile_side, return_dtype=pl.Int64).alias("side")
+            )
+            .sort("side")
+        )
         if d.height == 0:
             continue
         x = d["side"].to_numpy()
-        kw = dict(color=ESTIMATOR_COLOR[est], marker=ESTIMATOR_MARKER[est], label=ESTIMATOR_LABEL[est])
+        kw = {
+            "color": ESTIMATOR_COLOR[est],
+            "marker": ESTIMATOR_MARKER[est],
+            "label": ESTIMATOR_LABEL[est],
+        }
         cov = d[f"cov_{level}"].to_numpy()
         ax1.plot(x, cov, **kw)
-        ax1.fill_between(x, d[f"cov_{level}_lo"].to_numpy(), d[f"cov_{level}_hi"].to_numpy(),
-                         color=ESTIMATOR_COLOR[est], alpha=0.15, linewidth=0)
+        ax1.fill_between(
+            x,
+            d[f"cov_{level}_lo"].to_numpy(),
+            d[f"cov_{level}_hi"].to_numpy(),
+            color=ESTIMATOR_COLOR[est],
+            alpha=0.15,
+            linewidth=0,
+        )
         ax2.plot(x, d["ratio_median"].to_numpy(), **kw)
     ax1.axhline(int(level) / 100, color=TEXT_2, lw=1, ls="--")
     ax1.set_xscale("log", base=2)

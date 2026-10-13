@@ -1,0 +1,7 @@
+project:
+  type: default
+  render:
+    - report.qmd
+  # Quarto adds jQuery/RequireJS for Jupyter widgets from a CDN even though no output uses
+  # them; strip those tags so the HTML is fully self-contained.
+  post-render: python strip_cdn.py

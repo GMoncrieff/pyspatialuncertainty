@@ -38,6 +38,7 @@ format:
       light: cosmo
       dark: darkly
     toc: true
+    html-math-method: mathml
     code-copy: true
     fig-format: png
     fig-dpi: 110

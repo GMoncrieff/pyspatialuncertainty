@@ -5,6 +5,7 @@ date: today
 format:
   html:
     embed-resources: true
+    html-math-method: mathml
     toc: true
     toc-depth: 2
     number-sections: true
@@ -51,6 +52,11 @@ def get(exp, factor="baseline", level="baseline", estimator="method", group=None
 
 def pct(x):
     return f"{100 * x:.0f} %"
+
+def show(df, digits=3):
+    with pl.Config(tbl_formatting="MARKDOWN", tbl_hide_column_data_types=True, tbl_hide_dataframe_shape=True,
+                   fmt_str_lengths=300, tbl_rows=-1, tbl_cols=-1, float_precision=digits, tbl_width_chars=1000):
+        display(Markdown(str(df)))
 ```
 
 ```{python}
@@ -210,7 +216,7 @@ embedding.
 
 | Scenario | Truth | What the method receives |
 |---|---|---|
-| Continuous errors (`ErrorModelScenario`) | 128 × 128 cells. Errors σ(s)·ε*(s), with σ ∈ [0.5, 2] non-stationary and ε* = nugget + exponential(range *a*). Baseline: *a* = 8 cells, nugget 0.25. | c·σ, and 300 validation errors |
+| Continuous errors (`ErrorModelScenario`) | 128 × 128 cells. Errors σ(s)·ε\*(s), with σ ∈ [0.5, 2] non-stationary and ε\* = nugget + exponential(range *a*). Baseline: *a* = 8 cells, nugget 0.25. | c·σ, and 300 validation errors |
 | Class maps (`LatentClassScenario`) | A latent μ(s) + η(s) thresholded into 3 classes (≈ 60/30/10 %). η = nugget + exponential noise. Signal-to-noise Var(μ)/Var(η). | Exactly calibrated p (optionally temperature-scaled), and 300 validation labels |
 | Full pipeline (`PipelineScenario`) | The R script's design: trend + GRF 5·exp(−h/25) on [0, 100]², 200 samples. | Ranger-style QRF predictions and σ, and 10-fold CV errors |
 
@@ -236,16 +242,16 @@ run. The metrics are:
 ```{python}
 #| label: tbl-parity
 #| tbl-cap: "Python against R on the R script's own exported inputs."
-pl.DataFrame({
+show(pl.DataFrame({
     "quantity": ["standardized CV errors (step 3)", "sample variogram γ, gstat defaults (step 4)",
                  "correlogram of the nested model (step 4)", "integrand on the script's 1,000 MC pairs (step 6)",
                  "block variance: R script, m = 1,000", "block variance: R, m = 10⁶",
                  "block variance: Python, m = 10⁶"],
-    "result": [f"max |diff| = {max_std_diff:.1e}", f"max rel. diff = {max_gamma_rel:.1e} (same pair counts)",
-               f"max |diff| = {max_rho_diff:.1e}", f"max |diff| = {max_integrand_diff:.1e}",
+    "result": [f"max abs. diff = {max_std_diff:.1e}", f"max rel. diff = {max_gamma_rel:.1e} (same pair counts)",
+               f"max abs. diff = {max_rho_diff:.1e}", f"max abs. diff = {max_integrand_diff:.1e}",
                f"{summ['var_average']:.5f} ± {summ['mcse_script']:.5f}",
                f"{hm['var_average']:.5f} ± {hm['mcse']:.5f}", f"{py_var:.5f} ± {py_mcse:.5f}"],
-})
+}))
 ```
 
 The R script's results for the whole domain:
@@ -266,8 +272,8 @@ r_reps = ref("mc_replicates.csv")["var_average"].to_numpy()
 py_reps = np.array([psu.mc_block_variance(box_r, [integrand_r], n_mc=1000, seed=s).variance[0, 0] for s in range(200)])
 fig, ax = plt.subplots(figsize=(7, 3))
 bins = np.linspace(min(r_reps.min(), py_reps.min()), max(r_reps.max(), py_reps.max()), 30)
-ax.hist(r_reps, bins=bins, color=SERIES[1], alpha=0.55, label="R (spatstat + raster + gstat)")
-ax.hist(py_reps, bins=bins, color=SERIES[0], alpha=0.55, label="Python (pyspatialuncertainty)")
+ax.hist(r_reps, bins=bins, histtype="step", linewidth=2, color=SERIES[1], label="R (spatstat + raster + gstat)")
+ax.hist(py_reps, bins=bins, histtype="step", linewidth=2, color=SERIES[0], label="Python (pyspatialuncertainty)")
 ax.axvline(hm["var_average"], color=TEXT_2, lw=1.5)
 ax.set_xlabel("estimated variance of the block-mean error")
 ax.set_ylabel("replicates")
@@ -287,7 +293,7 @@ ax.plot(agg["m"], agg["med"], color=SERIES[0], marker="o")
 ax.axhline(np.sqrt(hm["var_average"]), color=TEXT_2, ls="--", lw=1)
 for m_mark, lab in [(1000, "R script"), (10000, "paper")]:
     ax.axvline(m_mark, color="#c9c8c2", lw=1)
-    ax.annotate(lab, (m_mark, agg["hi"].max()), ha="center", va="bottom", color=TEXT_2, fontsize=8)
+    ax.annotate(lab, (m_mark * 1.08, agg["hi"].max()), ha="left", va="top", color=TEXT_2, fontsize=8)
 ax.set_xscale("log")
 ax.set_xlabel("Monte Carlo pairs m")
 ax.set_ylabel("SD of the block mean")
@@ -317,7 +323,7 @@ plt.show()
 #| label: tbl-cont-levels
 #| tbl-cap: "Continuous baseline: coverage at four nominal levels, pooled over block sizes, plus the RMS of the z-scores (1 if the SDs are right)."
 d = S.filter(pl.col("experiment") == "continuous", pl.col("factor") == "baseline")
-(d.group_by("estimator").agg([pl.col(f"cov_{l}").mean().alias(f"{l} %") for l in ("50", "80", "90", "95")]
+show(d.group_by("estimator").agg([pl.col(f"cov_{l}").mean().alias(f"{l} %") for l in ("50", "80", "90", "95")]
                             + [pl.col("z_rms_pooled").median().alias("z RMS (median over groups)")])
    .sort("estimator"))
 ```
@@ -372,6 +378,10 @@ probabilities at both locations. Comparing the method with the oracle shows the
 additional cost of estimating one correlogram per class from 300 binary observations. For
 the rare class, few validation points carry a positive indicator, so its correlogram is
 the hardest to estimate.
+For the whole domain, even the oracle covers only
+`{python} pct(get('categorical', estimator='oracle', group='tile_128', cls='c'))` for the rare class, and
+`{python} pct(get('categorical', estimator='oracle', group='tile_128', cls='a'))` for class a. There
+the stationary approximation itself is the limiting factor.
 
 ## The R example as a full pipeline {#sec-pipeline}
 
@@ -411,14 +421,20 @@ if pipe_ok:
         "and their hand-set variogram sill is 0.65. Ranger's quantile regression forest makes "
         "σ too wide by a factor of about 1/√0.6 ≈ 1.3. The faithful method normalises the "
         "variogram, so it carries this over-dispersion into the block SDs.\n\n"
-        "Correlogram fitting pulls in the opposite direction. The automatic single-structure fit "
-        "rarely captures the weak long-range correlation of the QRF errors, which dominates the "
-        "variance of large block means. The R script's nested model, with its ranges fixed and "
-        "its sills fitted, leaves room for that correlation. Coverage for the whole domain is "
-        f"{pct(get('pipeline', group='domain'))} with the automatic fit and "
-        f"{pct(get('pipeline', estimator='method_nested', group='domain'))} with the nested fit; "
-        f"for 10 × 10-node tiles it is {pct(get('pipeline', group='tile_10'))} and "
-        f"{pct(get('pipeline', estimator='method_nested', group='tile_10'))}."
+        "Correlogram fitting interacts with this. For tiles, the automatic single-structure fit "
+        "decays faster than the true error correlation, which roughly offsets the wide σ: the median "
+        f"SD ratio is {get('pipeline', group='tile_25', col='ratio_median'):.2f} for 25 × 25-node tiles. "
+        "But the fitted correlogram varies between realizations, and coverage falls short at "
+        f"{pct(get('pipeline', group='tile_25'))}. The R script's nested model, with its ranges fixed "
+        "and its sills fitted, keeps the weak long-range structures and so gives larger SDs: a median "
+        f"ratio of {get('pipeline', estimator='method_nested', group='tile_25', col='ratio_median'):.2f} "
+        f"and coverage of {pct(get('pipeline', estimator='method_nested', group='tile_25'))} for the same "
+        "tiles. For the whole domain, both over-estimate the SD (median ratios "
+        f"{get('pipeline', group='domain', col='ratio_median'):.1f} and "
+        f"{get('pipeline', estimator='method_nested', group='domain', col='ratio_median'):.1f}), with coverage of "
+        f"{pct(get('pipeline', group='domain'))} and {pct(get('pipeline', estimator='method_nested', group='domain'))}. "
+        "In short, the over-dispersed QRF σ and the uncertain long-range correlation dominate the "
+        "accuracy of the end-to-end pipeline."
     ))
 ```
 
@@ -432,6 +448,13 @@ estimator, including the naive baselines.
 #| label: ablation-helpers
 SIZES = ["tile_2", "tile_8", "tile_32", "tile_128"]
 SIZE_LABEL = {"tile_2": "2 × 2", "tile_8": "8 × 8", "tile_32": "32 × 32", "tile_128": "128 × 128 (domain)"}
+
+def set_ratio_axis(ax):
+    ax.set_yscale("log")
+    ax.set_ylim(0.2, 10)
+    ax.set_yticks([0.25, 0.5, 1, 2, 4, 8])
+    ax.set_yticklabels(["¼", "½", "1", "2", "4", "8"])
+    ax.minorticks_off()
 
 def ablation_figure(exp, factors, baseline_values, labels, cls=None, title=None):
     fig, axes = plt.subplots(2, len(factors), figsize=(2.6 * len(factors) + 0.6, 5.2), constrained_layout=True,
@@ -455,7 +478,7 @@ def ablation_figure(exp, factors, baseline_values, labels, cls=None, title=None)
         axes[0, j].axhline(0.9, color=TEXT_2, ls="--", lw=1)
         axes[1, j].axhline(1.0, color=TEXT_2, ls="--", lw=1)
         axes[0, j].set_ylim(0, 1.02)
-        axes[1, j].set_yscale("log")
+        set_ratio_axis(axes[1, j])
         axes[0, j].set_title(labels[factor], fontsize=9.5)
         axes[1, j].set_xlabel(labels[factor], fontsize=8.5)
         if cat:
@@ -464,6 +487,9 @@ def ablation_figure(exp, factors, baseline_values, labels, cls=None, title=None)
         elif factor in ("range", "n_validation", "snr", "n_train"):
             for ax in axes[:, j]:
                 ax.set_xscale("log")
+                ax.set_xticks([xs[l] for l in levels])
+                ax.set_xticklabels([f"{float(l):g}" for l in levels])
+                ax.minorticks_off()
     axes[0, 0].set_ylabel("coverage of 90 % PI")
     axes[1, 0].set_ylabel("estimated / true SD")
     axes[0, 0].legend(fontsize=7.5, title="block", title_fontsize=7.5, loc="lower left")
@@ -479,6 +505,7 @@ def pooled_table(exp, factor, baseline_value, cls=None):
     d = d.with_columns(pl.when(pl.col("factor") == "baseline").then(pl.lit(f"{baseline_value} (baseline)"))
                        .otherwise(pl.col("level")).alias(factor))
     t = d.group_by(factor, "estimator").agg(pl.col("cov_90").mean()).pivot(on="estimator", index=factor, values="cov_90")
+    t = t.select([factor] + [c for c in ["method", "method_nested", "oracle", "naive_avg", "naive_indep"] if c in t.columns])
     return t.sort(pl.col(factor).map_elements(lambda s: level_sort_key(s.split(" ")[0]), return_dtype=pl.Float64))
 ```
 
@@ -497,16 +524,17 @@ plt.show()
 ```{python}
 #| label: tbl-abl-sd
 #| tbl-cap: "Misspecified σ (continuous): coverage of 90 % intervals pooled over tiles. 'constant' passes a constant σ (the domain mean) instead of the true non-stationary σ."
-pl.concat([pooled_table("continuous", "sd_scale", 1.0),
-           pooled_table("continuous", "sd_shape", "true").rename({"sd_shape": "sd_scale"})], how="vertical_relaxed")
+show(pl.concat([pooled_table("continuous", "sd_scale", 1.0).rename({"sd_scale": "σ handed to the method"}),
+                pooled_table("continuous", "sd_shape", "true").rename({"sd_shape": "σ handed to the method"})
+                .filter(pl.col("σ handed to the method") == "constant")], how="vertical_relaxed"))
 ```
 
 ```{python}
 #| label: tbl-abl-cont-rest
 #| tbl-cap: "Correlation range and nugget (continuous): coverage of 90 % intervals pooled over tiles."
-pl.concat([pooled_table("continuous", "range", 8.0).rename({"range": "level"}).with_columns(pl.lit("range").alias("factor")),
+show(pl.concat([pooled_table("continuous", "range", 8.0).rename({"range": "level"}).with_columns(pl.lit("range").alias("factor")),
            pooled_table("continuous", "nugget", 0.25).rename({"nugget": "level"}).with_columns(pl.lit("nugget").alias("factor"))],
-          how="vertical_relaxed").select("factor", "level", "method", "oracle", "naive_avg", "naive_indep")
+          how="vertical_relaxed").select("factor", "level", "method", "oracle", "naive_avg", "naive_indep"))
 ```
 
 ```{python}
@@ -567,15 +595,16 @@ if cat_ok:
                              .otherwise(pl.col("level")).alias("temperature"))
                .select("temperature", pl.col("bias_over_rmse").alias("bias / RMSE")))
         rows.append(t.join(b, on="temperature"))
-    display(pl.concat(rows, how="vertical_relaxed").select("class", "temperature", "method", "oracle", "naive_avg",
-                                                            "naive_indep", "bias / RMSE"))
+    show(pl.concat(rows, how="vertical_relaxed").select("class", "temperature", "method", "oracle", "naive_avg",
+                                                         "naive_indep", "bias / RMSE"), digits=2)
 ```
 
 **Miscalibration.** Temperature scaling biases both inputs: the expected fractions and
 σ_k. Over-confident probabilities (T < 1) shrink σ_k = sqrt(p(1 − p)) where the
 probabilities are sharp. Under-confident ones (T > 1) inflate it and also bias the
-expected areas of rare classes upwards. Coverage reflects both effects. As in the
-continuous case, the fitted sill of the standardized indicator errors flags the problem.
+expected areas of rare classes upwards. Coverage reflects both effects. Even the oracle, which uses the calibrated σ_k, loses
+coverage under miscalibration (see the table), because the expected fractions it is
+centred on are biased. As in the continuous case, the fitted sill of the standardized indicator errors flags the problem.
 
 **Signal-to-noise, range and nugget.** Higher signal-to-noise gives sharper probabilities,
 so smaller σ_k and fewer validation points near the class boundaries. The latent range
@@ -601,7 +630,7 @@ if pipe_ok:
                 ax.plot(e["x"], e["cov_90"], color=ESTIMATOR_COLOR[est], marker=ESTIMATOR_MARKER[est], ls=ls,
                         label=f"{ESTIMATOR_LABEL[est]}, {'25 × 25 tiles' if g == 'tile_25' else 'domain'}")
         ax.axhline(0.9, color=TEXT_2, ls="--", lw=1)
-        ax.set_ylim(0, 1.02); ax.set_xlabel(lab); ax.set_ylabel("coverage of 90 % PI")
+        ax.set_ylim(0.5, 1.02); ax.set_xlabel(lab); ax.set_ylabel("coverage of 90 % PI")
     axes[0].legend(fontsize=7, loc="lower left")
     plt.show()
 ```

@@ -43,14 +43,19 @@ val = psu.standardized_errors(cv_table, observed="obs", predicted="pred", sd="sd
 # step 4: gstat-compatible sample variogram and WLS fit
 ev = psu.empirical_variogram(val, "std_error", "x", "y")
 fit = psu.fit_variogram(ev, psu.vgm(0.5, "Exp", 10, nugget=0.1))
-print(fit.model.sill)   # ≈ 1 if σ is calibrated; the method trusts σ for scale
+print(fit.model.sill)  # ≈ 1 if σ is calibrated; the method trusts σ for scale
 
 # steps 5-8: Monte Carlo integration over blocks
 res = psu.aggregate_continuous(
-    sd_map, fit.model, psu.blocks.tiles(sd_map, 10),   # or blocks.polygons(...), zones(...), domain(...)
-    prediction=pred_map, n_mc=10_000, level=0.90, seed=1,
+    sd_map,
+    fit.model,
+    psu.blocks.tiles(sd_map, 10),  # or blocks.polygons(...), zones(...), domain(...)
+    prediction=pred_map,
+    n_mc=10_000,
+    level=0.90,
+    seed=1,
 )
-res.table        # Polars: mean_pred, sd_mean, lower, upper, total_pred, sd_total, mcse...
+res.table  # Polars: mean_pred, sd_mean, lower, upper, total_pred, sd_total, mcse...
 res.to_xarray()  # block results as rasters
 ```
 
@@ -60,12 +65,16 @@ with no CRS.
 ## Class probability maps
 
 ```python
-psu.validate_probabilities(prob_map)                     # sums to one, strictly inside (0, 1)
+psu.validate_probabilities(prob_map)  # sums to one, strictly inside (0, 1)
 errors = psu.indicator_errors(val_table, {"forest": "p_forest", "grass": "p_grass"}, label="label")
-fits = psu.fit_class_variograms(errors)                   # one correlogram per class
-res = psu.aggregate_categorical(prob_map, {c: f.model for c, f in fits.items()},
-                                psu.blocks.polygons(regions, prob_map), area_scale=1e-4)
-res.table        # fraction, sd_fraction, expected_area, sd_area, area_lower, area_upper, ...
+fits = psu.fit_class_variograms(errors)  # one correlogram per class
+res = psu.aggregate_categorical(
+    prob_map,
+    {c: f.model for c, f in fits.items()},
+    psu.blocks.polygons(regions, prob_map),
+    area_scale=1e-4,
+)
+res.table  # fraction, sd_fraction, expected_area, sd_area, area_lower, area_upper, ...
 ```
 
 ## Verification
