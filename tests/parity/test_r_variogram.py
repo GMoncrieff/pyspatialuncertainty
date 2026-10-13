@@ -15,7 +15,7 @@ pytestmark = pytest.mark.r_parity
 
 @pytest.fixture(scope="module")
 def pt_all(r_ref: Path) -> pl.DataFrame:
-    return pl.read_csv(r_ref / "pt_all.csv")
+    return pl.read_csv(r_ref / "pt_all.csv", infer_schema_length=None)
 
 
 @pytest.mark.parametrize(
