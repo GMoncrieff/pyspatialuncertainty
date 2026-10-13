@@ -127,3 +127,24 @@ def test_auto_fit_selects_generating_family(family: str) -> None:
     fit = fit_variogram_auto(ev)
     assert fit.model.structures[-1].model == family
     np.testing.assert_allclose(fit.model.gamma(ev.dist), ev.gamma, atol=1e-5)
+
+
+def test_auto_fit_is_bounded_for_unbounded_variograms() -> None:
+    dist = np.linspace(1, 40, 20)
+    ev = EmpiricalVariogram(
+        n_pairs=np.full(20, 100, dtype=np.int64),
+        dist=dist,
+        gamma=0.5 + 0.02 * dist,
+        boundaries=np.linspace(0, 41, 21),
+        cutoff=41.0,
+        width=2.0,
+        estimator="matheron",
+        n_obs=300,
+    )
+    fit = fit_variogram_auto(ev)
+    assert fit.model.sill <= 2 * ev.gamma.max() * 2 + 1e-9
+    main = fit.model.structures[-1]
+    practical = {"Exp": 3.0, "Gau": math.sqrt(3.0), "Sph": 1.0}[main.model]
+    assert main.range <= 2 * 40 / practical * (1 + 1e-9)
+    unbounded = fit_variogram_auto(ev, bounded=False)
+    assert unbounded.sserr <= fit.sserr + 1e-12

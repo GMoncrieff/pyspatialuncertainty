@@ -1,0 +1,221 @@
+---
+title: "Tutorial: block averages and totals of a continuous map"
+execute:
+  warning: false
+---
+
+This tutorial works through the eight steps of Wadoux & Heuvelink (2023, Section 4.1) on
+the synthetic example from the authors' R script:
+
+- a 100 × 100 grid on [0, 100]²;
+- a linear trend plus a Gaussian random field with covariance 5·exp(−h/25);
+- 200 sample points;
+- a 250-tree quantile regression forest on the coordinates, with 10-fold
+  cross-validation.
+
+The last section repeats the aggregation on the R script's own exported outputs and
+compares the numbers with R.
+
+```{python}
+#| code-fold: true
+#| code-summary: "Setup and plotting style"
+import numpy as np
+import polars as pl
+import matplotlib.pyplot as plt
+
+import pyspatialuncertainty as psu
+from pyspatialuncertainty.synthetic import PipelineScenario
+
+plt.rcParams.update({"figure.facecolor": "#fcfcfb", "axes.facecolor": "#fcfcfb",
+                     "axes.spines.top": False, "axes.spines.right": False,
+                     "axes.edgecolor": "#c9c8c2", "axes.titlesize": 10, "font.size": 9})
+BLUE, ORANGE, AQUA, YELLOW = "#2a78d6", "#eb6834", "#1baf7a", "#eda100"
+```
+
+## Steps 1–2: point predictions and their uncertainty
+
+`PipelineScenario` re-implements the R script: it simulates the field, samples it,
+cross-validates a ranger-style quantile regression forest and maps it. The forest
+predicts at each location a conditional distribution, summarised as 500 draws. Their mean
+is the prediction and their standard deviation is σ(s) (step 2). If your model returns
+samples or quantiles instead, `psu.sd_from_samples` and `psu.sd_from_quantiles` compute σ.
+
+```{python}
+scenario = PipelineScenario()            # the R script's settings
+real = scenario.simulate(np.random.default_rng(31415))
+
+fig, axes = plt.subplots(1, 3, figsize=(10, 3.2), constrained_layout=True)
+for ax, (da, title) in zip(axes, [(real.truth, "Truth"), (real.prediction, "QRF prediction"),
+                                  (real.sd, "Prediction-error SD σ(s)")]):
+    im = ax.imshow(da.values, origin="lower", extent=(0, 100, 0, 100), cmap="viridis")
+    ax.set_title(title)
+    fig.colorbar(im, ax=ax, shrink=0.8)
+v = real.validation
+axes[0].scatter(v["x"], v["y"], s=4, c="white", edgecolors="black", linewidths=0.3)
+plt.show()
+```
+
+## Step 3: standardized cross-validation errors
+
+The predictions and σ at the sample points come from the cross-validation folds, so no
+model ever predicted a point it was trained on.
+
+```{python}
+val = psu.standardized_errors(v, observed="observed", predicted="predicted", sd="sd")
+val.select("x", "y", "observed", "predicted", "sd", "std_error").head()
+```
+
+## Step 4: variogram of the standardized errors
+
+The sample variogram follows gstat's defaults: a cutoff of 0.33333 × the bounding-box
+diagonal and 15 lag classes. `fit_variogram_auto` tries a nugget plus an exponential,
+spherical or Gaussian structure and keeps the best weighted least-squares fit (gstat's
+`fit.method = 7`). To fit a model of your own choice, use `psu.fit_variogram(ev, start)`.
+
+```{python}
+ev = psu.empirical_variogram(val, "std_error", "x", "y")
+fit = psu.fit_variogram_auto(ev)
+print(fit.model)
+print(f"variance of the standardized errors: {val['std_error'].var():.2f}")
+```
+
+```{python}
+#| fig-cap: "Sample variogram of the standardized CV errors (dots, sized by number of pairs) and the fitted model."
+h = np.linspace(0, ev.cutoff, 200)
+fig, ax = plt.subplots(figsize=(6, 3.2))
+ax.scatter(ev.dist, ev.gamma, s=ev.n_pairs / 10, color=BLUE, zorder=3)
+ax.plot(h[1:], fit.model.gamma(h[1:]), color=BLUE)
+ax.axhline(1.0, color="#8a8984", lw=1, ls="--")
+ax.annotate("sill expected if σ is calibrated", (ev.cutoff, 1.0), ha="right", va="bottom", color="#52514e")
+ax.set_xlabel("distance"); ax.set_ylabel("semivariance"); ax.set_ylim(0, 1.15)
+plt.show()
+```
+
+The fitted sill is the variance of the standardized errors. **A sill well below 1 means
+the forest's σ is too wide.** In the R script the hand-set model has a sill of 0.65, and
+this realization tells the same story.
+
+The paper converts the variogram into a correlogram, ρ(h) = (sill − γ(h))/sill. That
+keeps only the *shape* of the correlation and trusts σ for the *scale*, so any error in σ
+passes straight into the block standard deviations. The package keeps this faithful
+behaviour. Check the sill before you interpret the results.
+
+```{python}
+rho = fit.model.to_correlation()
+print("rho at h = 0, 1, 5, 20:", np.round(rho(np.array([0.0, 1, 5, 20])), 3))
+```
+
+## Steps 5–8: Monte Carlo integration over blocks
+
+The blocks are the whole domain (the box [0, 100]² used in the R script) and 25 × 25 tiles.
+For each block, `aggregate_continuous` draws 10,000 pairs of uniform points, averages
+σ(s)σ(u)ρ(|s − u|), and reports four things:
+
+- the SD of the block average, with its Monte Carlo standard error;
+- the SD of the block total, which is |B| times the SD of the average;
+- normal prediction intervals;
+- the relative error.
+
+```{python}
+domain = psu.aggregate_continuous(real.sd, fit.model, psu.blocks.box(0, 0, 100, 100, real.sd),
+                                  prediction=real.prediction, n_mc=10_000, level=0.90, seed=1)
+domain.table.select("mean_pred", "sd_mean", "mcse_sd", "lower", "upper", "total_pred", "sd_total")
+```
+
+```{python}
+print(f"true block mean {float(real.truth.mean()):.3f}; prediction {domain.table['mean_pred'][0]:.3f}")
+```
+
+::: {.callout-warning}
+## Large blocks depend on the tail of the correlogram
+
+For the whole domain, the variance of the block mean depends mostly on the weak,
+long-range part of the correlation. A short-range model that fits the first few lag
+classes well can miss it. The R script's hand-set model has a nugget, a short exponential
+structure, and weak spherical (range 15) and exponential (range 60) structures. Below, the
+same nested model is fitted to this realization's sample variogram, with the ranges held
+fixed and only the sills fitted.
+:::
+
+```{python}
+nested_start = (psu.vgm(0.46, "Exp", 2, nugget=0.05) + psu.vgm(0.08, "Sph", 15)
+                + psu.vgm(0.06, "Exp", 60))
+nested = psu.fit_variogram(ev, nested_start, fit_ranges=False)
+print(nested.model)
+dom_nested = psu.aggregate_continuous(real.sd, nested.model, psu.blocks.box(0, 0, 100, 100, real.sd),
+                                      prediction=real.prediction, n_mc=10_000, seed=1)
+pl.DataFrame({"correlogram": ["automatic (single structure)", "nested, R-script ranges"],
+              "sd_of_domain_mean": [domain.table["sd_mean"][0], dom_nested.table["sd_mean"][0]],
+              "mcse_sd": [domain.table["mcse_sd"][0], dom_nested.table["mcse_sd"][0]]})
+```
+
+In this realization the error of the domain mean,
+`{python} f"{float(real.truth.mean()) - domain.table['mean_pred'][0]:.3f}"`, is
+`{python} f"{abs(float(real.truth.mean()) - domain.table['mean_pred'][0]) / domain.table['sd_mean'][0]:.1f}"`
+standard deviations under the automatic fit and
+`{python} f"{abs(float(real.truth.mean()) - domain.table['mean_pred'][0]) / dom_nested.table['sd_mean'][0]:.1f}"`
+under the nested fit. The [verification report](../report.html) quantifies this effect
+across many realizations.
+
+```{python}
+tiles = psu.aggregate_continuous(real.sd, fit.model, psu.blocks.tiles(real.sd, 25),
+                                 prediction=real.prediction, n_mc=10_000, seed=2)
+coarse = tiles.to_xarray(coarse=True)
+fig, axes = plt.subplots(1, 2, figsize=(8, 3.4), constrained_layout=True)
+for ax, var, title in [(axes[0], "mean_pred", "Block mean prediction"), (axes[1], "sd_mean", "SD of block mean")]:
+    im = ax.imshow(coarse[var].values, origin="lower", extent=(0, 100, 0, 100), cmap="viridis")
+    ax.set_title(title)
+    fig.colorbar(im, ax=ax, shrink=0.8)
+plt.show()
+```
+
+## Naive alternatives
+
+The paper warns against two shortcuts. Averaging the point SDs assumes perfectly
+correlated errors. Treating cells as independent gives sqrt(Σσ²)/n. On this map they
+bracket the correct answer by a wide margin:
+
+```{python}
+grid = psu.GridSpec.from_dataarray(real.sd)
+sdv = grid.values(real.sd)
+rb = psu.resolve_blocks(psu.blocks.box(0, 0, 100, 100, grid), np.isfinite(sdv))
+pl.DataFrame({
+    "approach": ["Monte Carlo integration (this method)", "average of point SDs", "independent errors"],
+    "sd_of_block_mean": [domain.table["sd_mean"][0], psu.sd_average(rb, sdv)[0], psu.sd_independent(rb, sdv)[0]],
+})
+```
+
+## Reproducing the authors' R results
+
+The repository ships the R script's exported intermediates in `tests/data/r_reference`:
+the map, the QRF predictions and variances, the hand-set variogram model, and the exact
+Monte Carlo pairs the script drew. Here they go through the same function.
+
+```{python}
+import xarray as xr
+from pathlib import Path
+
+ref = next(d / "tests/data/r_reference" for d in [Path.cwd(), *Path.cwd().parents]
+           if (d / "tests/data/r_reference").exists())
+rd = lambda name: pl.read_csv(ref / name, infer_schema_length=None)
+g = rd("grid.csv")
+c = np.sort(g["x1"].unique().to_numpy())
+as_da = lambda col: xr.DataArray(g[col].to_numpy().reshape(100, 100), coords={"y": c, "x": c}, dims=("y", "x"))
+model_r = psu.VariogramModel.from_table(rd("variogram_model.csv"))
+print(model_r)
+
+res_r = psu.aggregate_continuous(np.sqrt(as_da("predVarRF")), model_r, psu.blocks.box(0, 0, 100, 100, as_da("y")),
+                                 prediction=as_da("predRF"), n_mc=1_000_000, z=1.64, seed=1)
+summary = dict(zip(*rd("summary.csv").to_dict(as_series=False).values()))
+pl.DataFrame({
+    "quantity": ["SD of block mean", "90% PI lower (z = 1.64)", "90% PI upper", "SD of block total"],
+    "R script (m = 1,000)": [summary["sd_average"], summary["pi90_lower_z164"], summary["pi90_upper_z164"], summary["sd_total"]],
+    "Python (m = 1,000,000)": [res_r.table["sd_mean"][0], res_r.table["lower"][0], res_r.table["upper"][0], res_r.table["sd_total"][0]],
+})
+```
+
+The two estimates differ by about one Monte Carlo standard error of the R script's
+1,000-pair estimate (MCSE of the variance: `{python} f"{summary['mcse_script']:.4f}"`).
+The test suite also shows that the integrand matches R to machine precision on the
+script's own point pairs. The [verification report](../report.html) has the full parity
+study, along with coverage results across many realizations.

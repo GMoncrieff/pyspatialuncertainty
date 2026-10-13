@@ -1,0 +1,74 @@
+# Experiment definitions for the verification (E1) and ablation (E2) studies.
+# Each ablation changes one factor of the baseline; the baseline is run once with
+# `baseline_realizations` realizations and serves as the reference level of every factor.
+
+seed = 20231320
+n_workers = 4
+n_mc = 10000                     # Monte Carlo pairs per block (the paper's value)
+levels = [0.5, 0.8, 0.9, 0.95]   # nominal coverages of the prediction intervals
+
+[continuous]
+realizations = 300
+baseline_realizations = 500
+grid_cells = 128
+subgrid = 4
+tile_sizes = [2, 4, 8, 16, 32, 64, 128]
+max_tiles_per_size = 64
+n_polygons = 6
+
+[continuous.baseline]
+range = 8.0          # gstat range parameter of the exponential structure, in cells
+nugget = 0.25        # nugget share of the standardized-error variance
+sd_scale = 1.0       # sigma handed to the method = sd_scale * true sigma
+sd_shape = "true"    # "true" or "constant" (domain-mean sigma everywhere)
+n_validation = 300
+
+[continuous.ablations]
+sd_scale = [0.5, 0.75, 1.5, 2.0]
+sd_shape = ["constant"]
+range = [1.0, 4.0, 16.0, 64.0]
+nugget = [0.0, 0.5, 0.9]
+n_validation = [100, 1000]
+
+[categorical]
+realizations = 300
+baseline_realizations = 500
+grid_cells = 128
+subgrid = 4
+tile_sizes = [2, 4, 8, 16, 32, 64, 128]
+max_tiles_per_size = 64
+n_polygons = 6
+exact_tile_sizes = [2, 4]   # tiles for which the exact (bivariate normal) SD is computed
+exact_max_blocks = 8
+
+[categorical.baseline]
+range = 8.0          # latent noise exponential range, in cells
+nugget = 0.25        # latent noise nugget share
+snr = 1.0            # Var(mu) / Var(noise)
+temperature = 1.0    # temperature applied to the calibrated probabilities
+sd_scale = 1.0       # what-if scaling of sigma_k = sqrt(p(1 - p))
+n_validation = 300
+
+[categorical.ablations]
+temperature = [0.5, 0.7, 1.4, 2.0]
+sd_scale = [0.5, 2.0]
+snr = [0.25, 4.0]
+range = [1.0, 4.0, 16.0, 64.0]
+nugget = [0.0, 0.5]
+
+[pipeline]
+realizations = 100
+baseline_realizations = 200
+tile_sizes = [10, 25, 50]   # tiles in grid nodes, plus the whole domain as in the R script
+
+[pipeline.baseline]
+trend_r2 = 0.6756756756756757   # the R script's trend explains this share of the variance
+n_train = 200
+
+[pipeline.ablations]
+trend_r2 = [0.2, 0.5, 0.8]
+n_train = [100, 500]
+
+[mc_convergence]
+m = [100, 300, 1000, 3000, 10000, 30000, 100000]
+replicates = 200

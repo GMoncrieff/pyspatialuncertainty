@@ -53,6 +53,7 @@ jobs:
         env:
           QUARTO_PYTHON: ${{ github.workspace }}/.venv/bin/python
         run: |
+          cp ../report/report.html report.html
           uv run quartodoc build
           uv run quarto render
       - uses: actions/upload-pages-artifact@v3

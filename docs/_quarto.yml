@@ -1,0 +1,130 @@
+project:
+  type: website
+  output-dir: _site
+  resources:
+    - report.html
+
+execute:
+  freeze: false
+  cache: false
+
+website:
+  title: "pyspatialuncertainty"
+  description: "Uncertainty of spatial averages and totals of maps (Wadoux & Heuvelink, 2023)"
+  repo-url: https://github.com/GMoncrieff/pyspatialuncertainty
+  navbar:
+    left:
+      - href: index.qmd
+        text: Home
+      - href: method.qmd
+        text: Method
+      - text: Tutorials
+        menu:
+          - href: tutorials/continuous.qmd
+            text: Continuous maps
+          - href: tutorials/categorical.qmd
+            text: Class probability maps
+      - href: reference/index.qmd
+        text: API reference
+      - href: report.html
+        text: Verification report
+    right:
+      - icon: github
+        href: https://github.com/GMoncrieff/pyspatialuncertainty
+
+format:
+  html:
+    theme:
+      light: cosmo
+      dark: darkly
+    toc: true
+    code-copy: true
+    fig-format: png
+    fig-dpi: 110
+
+jupyter: python3
+
+quartodoc:
+  package: pyspatialuncertainty
+  title: API reference
+  parser: numpy
+  render_interlinks: false
+  sidebar: reference/_sidebar.yml
+  sections:
+    - title: Continuous maps
+      desc: Steps 2-8 of the method for maps of a continuous variable.
+      contents:
+        - aggregate_continuous
+        - BlockUncertainty
+        - standardized_errors
+        - sd_from_samples
+        - sd_from_quantiles
+    - title: Class probability maps
+      desc: The per-class analogue for calibrated class probabilities.
+      contents:
+        - aggregate_categorical
+        - ClassAreaUncertainty
+        - validate_probabilities
+        - clip_probabilities
+        - temperature_scale
+        - indicator_errors
+        - fit_class_variograms
+        - ClassVariogram
+        - ProbabilityError
+    - title: Variograms
+      desc: Sample variograms, models and fitting with gstat's conventions.
+      contents:
+        - vgm
+        - VariogramModel
+        - Structure
+        - Nugget
+        - Exponential
+        - Spherical
+        - Gaussian
+        - Matern
+        - MaternStein
+        - empirical_variogram
+        - EmpiricalVariogram
+        - fit_variogram
+        - fit_variogram_auto
+        - VariogramFit
+    - title: Correlation functions
+      contents:
+        - CorrelationFunction
+        - from_variogram
+        - as_correlation
+        - VariogramCorrelation
+        - CallableCorrelation
+    - title: Blocks and grids
+      contents:
+        - blocks.tiles
+        - blocks.zones
+        - blocks.polygons
+        - blocks.box
+        - blocks.domain
+        - BlockSet
+        - resolve_blocks
+        - ResolvedBlock
+        - GridSpec
+    - title: Monte Carlo engine, intervals and baselines
+      contents:
+        - mc_block_variance
+        - Integrand
+        - MCResult
+        - normal_interval
+        - z_value
+        - sd_average
+        - sd_independent
+    - title: Synthetic data
+      desc: Scenarios with known truth used for verification.
+      package: pyspatialuncertainty.synthetic
+      contents:
+        - ErrorModelScenario
+        - PipelineScenario
+        - LatentClassScenario
+        - SubGridLayout
+        - evaluation_blocks
+        - CirculantEmbedding
+        - exact_block_variance
+        - indicator_block_variance
+        - bvn_cdf

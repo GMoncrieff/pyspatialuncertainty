@@ -104,6 +104,8 @@ def fit_variogram(
     fit_ranges: bool | Sequence[bool] = True,
     max_iter: int = 100,
     tol: float = 1e-10,
+    max_range: float | None = None,
+    max_psill: float | None = None,
 ) -> VariogramFit:
     """Fit a (nested) variogram model to a sample variogram by weighted least squares.
 
@@ -122,6 +124,10 @@ def fit_variogram(
         Maximum number of re-weighting iterations (only used by ``fit_method=2``).
     tol
         Convergence tolerance.
+    max_range, max_psill
+        Optional upper bounds on the range parameters and partial sills. Without them a
+        sample variogram that keeps rising up to the cutoff can be fitted with an
+        arbitrarily large sill and range, which turns the correlogram into ρ ≈ 1.
 
     Returns
     -------
@@ -171,7 +177,9 @@ def fit_variogram(
         [psill0[sill_idx], np.log(np.maximum(range0[range_idx], 1e-12 * max_dist))]
     )
     lower = np.concatenate([np.zeros(n_sill), np.full(n_range, math.log(1e-9 * max_dist))])
-    upper = np.concatenate([np.full(n_sill, np.inf), np.full(n_range, math.log(1e6 * max_dist))])
+    sill_hi = np.inf if max_psill is None else float(max_psill)
+    range_hi = math.log(1e6 * max_dist) if max_range is None else math.log(float(max_range))
+    upper = np.concatenate([np.full(n_sill, sill_hi), np.full(n_range, range_hi)])
     theta = np.clip(theta, lower, upper)
 
     weights = fit_weights(ev, model, fit_method)
@@ -224,6 +232,7 @@ def fit_variogram_auto(
     nugget: bool = True,
     fit_method: FitMethod = 7,
     range_fractions: Sequence[float] = (0.05, 0.15, 0.35, 0.7),
+    bounded: bool = True,
 ) -> VariogramFit:
     """Fit ``Nug + <model>`` for several model types and starting ranges; keep the best.
 
@@ -243,6 +252,10 @@ def fit_variogram_auto(
         gstat weighting scheme (see :func:`fit_variogram`).
     range_fractions
         Starting (practical) ranges as fractions of the largest lag distance.
+    bounded
+        Constrain each fit to a practical range of at most twice the largest lag distance
+        and partial sills of at most twice the largest sample semivariance, which keeps
+        the automatic fit from extrapolating an unbounded trend.
 
     Returns
     -------
@@ -267,7 +280,13 @@ def fit_variogram_auto(
             if nugget:
                 structs.append(Structure("Nug", nug0))
             structs.append(Structure(code, psill0, a0))
-            fit = fit_variogram(ev, VariogramModel(tuple(structs)), fit_method=fit_method)
+            fit = fit_variogram(
+                ev,
+                VariogramModel(tuple(structs)),
+                fit_method=fit_method,
+                max_range=2.0 * max_dist / practical[code] if bounded else None,
+                max_psill=2.0 * gmax if bounded else None,
+            )
             if best is None or fit.sserr < best.sserr:
                 best = fit
     assert best is not None

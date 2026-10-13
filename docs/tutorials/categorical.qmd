@@ -1,0 +1,162 @@
+---
+title: "Tutorial: uncertainty of class areas from class probabilities"
+execute:
+  warning: false
+---
+
+Suppose a land-cover model gives a **calibrated probability** for each class in every
+cell. Summing those probabilities over a region gives its expected class area. How
+uncertain is that area? This mode answers the question per class, following the
+continuous method as closely as possible:
+
+- the prediction error is $e_k = I_k - p_k$, with $\sigma_k = \sqrt{p_k(1-p_k)}$;
+- one correlogram is fitted per class to the standardized validation errors;
+- the variance of the block-fraction error is the same Monte Carlo integral as in the
+  continuous case;
+- the expected area is $|B|$ times the block mean of $p_k$.
+
+```{python}
+#| code-fold: true
+#| code-summary: "Setup"
+import numpy as np
+import polars as pl
+import matplotlib.pyplot as plt
+import shapely
+
+import pyspatialuncertainty as psu
+from pyspatialuncertainty.synthetic import LatentClassScenario, SubGridLayout
+
+plt.rcParams.update({"figure.facecolor": "#fcfcfb", "axes.facecolor": "#fcfcfb",
+                     "axes.spines.top": False, "axes.spines.right": False, "font.size": 9})
+```
+
+## A synthetic class map with known truth
+
+`LatentClassScenario` thresholds a latent Gaussian field into three classes, `forest`,
+`grassland` and `wetland`, with overall proportions of about 60 %, 30 % and 10 %. The
+latent field is the sum of a known signal μ and spatially correlated noise. Because the
+noise distribution is known, the class probabilities given μ are exactly calibrated.
+
+```{python}
+sc = LatentClassScenario(layout=SubGridLayout(n=80, cell_size=1.0, f=2),
+                         latent=psu.vgm(0.75, "Exp", 6.0, nugget=0.25),
+                         classes=("forest", "grassland", "wetland"), n_validation=400)
+probs = sc.probabilities()          # DataArray (class, y, x), sums to one
+real = sc.simulate(np.random.default_rng(7))
+
+fig, axes = plt.subplots(1, 3, figsize=(10, 3.2), constrained_layout=True)
+for ax, cls in zip(axes, sc.classes):
+    im = ax.imshow(probs.sel({"class": cls}).values, extent=(0, 80, 0, 80), cmap="viridis", vmin=0, vmax=1)
+    ax.set_title(f"P({cls})")
+fig.colorbar(im, ax=axes, shrink=0.8)
+plt.show()
+```
+
+## Validating the probabilities
+
+The method needs probabilities that sum to one and are **strictly** between 0 and 1,
+because σ_k = sqrt(p(1 − p)) must be positive. Hard zeros or ones are rejected rather than
+silently changed:
+
+```{python}
+psu.validate_probabilities(probs)            # passes
+
+bad = probs.copy()
+bad[:, 0, 0] = [1.0, 0.0, 0.0]
+try:
+    psu.validate_probabilities(bad)
+except psu.ProbabilityError as err:
+    print("ProbabilityError:", err)
+```
+
+If softening hard probabilities is acceptable for your application, call
+`psu.clip_probabilities(p, eps)` explicitly.
+
+## Standardized indicator errors at validation points
+
+The validation table needs the observed class and **out-of-sample** probabilities for
+every class at each validation point, for example from cross-validation. Here they come
+straight from the calibrated map.
+
+```{python}
+cells = real.validation["cell"].to_numpy()
+p_flat = probs.values.reshape(3, -1)
+val = real.validation.with_columns(
+    [pl.Series(f"p_{c}", p_flat[k, cells]) for k, c in enumerate(sc.classes)]
+)
+errors = psu.indicator_errors(val, {c: f"p_{c}" for c in sc.classes}, label="label")
+errors.head()
+```
+
+## One correlogram per class
+
+```{python}
+fits = psu.fit_class_variograms(errors)
+fig, axes = plt.subplots(1, 3, figsize=(10, 2.9), constrained_layout=True)
+for ax, (cls, cv) in zip(axes, fits.items()):
+    ev = cv.empirical
+    h = np.linspace(0, ev.cutoff, 150)[1:]
+    ax.scatter(ev.dist, ev.gamma, s=ev.n_pairs / 20, color="#2a78d6")
+    ax.plot(h, cv.model.gamma(h), color="#2a78d6")
+    ax.set_title(f"{cls} (fitted sill {cv.model.sill:.2f})")
+    ax.set_xlabel("distance")
+plt.show()
+```
+
+With calibrated probabilities the standardized errors have unit variance, so the fitted
+sills should be near 1. A sill far from 1 is a sign of miscalibration.
+
+## Expected class areas and their uncertainty
+
+The blocks are 20 × 20 tiles plus two polygons. All classes share the same Monte Carlo
+point pairs.
+
+```{python}
+correlations = {cls: cv.model for cls, cv in fits.items()}
+tiles = psu.aggregate_categorical(probs, correlations, psu.blocks.tiles(probs, 20), n_mc=10_000, seed=1)
+tiles.table.filter(pl.col("block_id") < 2).select(
+    "class", "block_id", "area", "fraction", "sd_fraction", "lower", "upper", "expected_area", "sd_area")
+```
+
+```{python}
+ds = tiles.to_xarray(coarse=True)
+fig, axes = plt.subplots(2, 3, figsize=(10, 6), constrained_layout=True)
+for j, cls in enumerate(sc.classes):
+    for i, (var, title) in enumerate([("expected_area", "expected area"), ("sd_area", "SD of area")]):
+        im = axes[i, j].imshow(ds[var].sel({"class": cls}).values, extent=(0, 80, 0, 80), cmap="viridis")
+        axes[i, j].set_title(f"{cls}: {title}")
+        fig.colorbar(im, ax=axes[i, j], shrink=0.75)
+plt.show()
+```
+
+Polygons work the same way. Monte Carlo points are drawn inside the exact geometry:
+
+```{python}
+regions = [shapely.Polygon([(5, 5), (60, 10), (40, 50), (8, 40)]), shapely.box(45, 45, 78, 78)]
+poly = psu.aggregate_categorical(probs, correlations, psu.blocks.polygons(regions, probs, ids=["west", "north-east"]),
+                                 n_mc=10_000, seed=2)
+poly.table.select("class", "block_id", "area", "expected_area", "sd_area", "area_lower", "area_upper")
+```
+
+## How good are these intervals?
+
+Here we know the truth. The latent noise can be simulated again and again, and each time
+we can check whether the true block fractions fall inside the 90 % intervals:
+
+```{python}
+from pyspatialuncertainty.synthetic import evaluation_blocks
+
+eb = evaluation_blocks(sc.layout, tile_sizes=(20,), max_per_size=16, n_polygons=0)
+res = psu.aggregate_categorical(probs, correlations, eb.blockset, n_mc=10_000, seed=3)
+pred = res.table["fraction"].to_numpy().reshape(3, -1)
+sd = res.table["sd_fraction"].to_numpy().reshape(3, -1)
+rng = np.random.default_rng(11)
+truth = np.array([[eb.block_means(r.fraction_sub[k]) for k in range(3)] for r in (sc.simulate(rng) for _ in range(200))])
+covered = np.abs(truth - pred) <= 1.645 * sd
+pl.DataFrame({"class": list(sc.classes), "coverage of 90% PI": covered.mean(axis=(0, 2)),
+              "estimated SD / simulated SD": (sd / (truth - pred).std(axis=0)).mean(axis=1)})
+```
+
+This is a single map and a single correlogram fit. The
+[verification report](../report.html) repeats the check over hundreds of realizations,
+several block sizes and deliberately miscalibrated probabilities.

@@ -1,0 +1,85 @@
+---
+title: "Method"
+---
+
+## Continuous maps
+
+Wadoux & Heuvelink (2023, Section 4.1) give eight steps. This table maps each step to the
+package.
+
+| Step | What | In this package |
+|---|---|---|
+| 1 | Quantify the point-support prediction uncertainty, e.g. with a quantile regression forest or conformal prediction | your model |
+| 2 | Compute the prediction-error SD σ(s) at prediction and validation locations | `sd_from_samples`, `sd_from_quantiles` |
+| 3 | Standardize the validation errors: (observed − predicted) / σ, using cross-validated or independent predictions | `standardized_errors` |
+| 4 | Fit a variogram to the standardized errors and convert it to a correlation function, ρ(h) = (sill − γ(h)) / sill | `empirical_variogram`, `fit_variogram`, `vgm`, `from_variogram` |
+| 5–6 | Estimate $\frac{1}{|B|^2}\iint_B \sigma(s)\sigma(u)\rho(|s-u|)\,ds\,du$ as the mean of σ(S)σ(U)ρ(\|S − U\|) over *m* pairs of uniform points | `aggregate_continuous`, `mc_block_variance` |
+| 7 | Variance of the block total = \|B\|² × variance of the block average | `aggregate_continuous` |
+| 8 | Report SDs and normal prediction intervals (central limit theorem) | `aggregate_continuous`, `normal_interval` |
+
+### Conventions
+
+- **Variograms follow gstat.** The defaults are a cutoff of 0.33333 × the bounding-box
+  diagonal and a lag width of cutoff/15. Lag classes are upper-inclusive. The models
+  (`Nug`, `Exp`, `Sph`, `Gau`, `Mat`, `Ste`) use gstat's parameterisation of the range.
+  Fit weights use gstat's `fit.method` codes; the default is 7, N_j/h_j². The test suite
+  checks all of this against gstat 2.1-1.
+- **The correlogram is normalised by the sill** (step 4). This means the method trusts σ
+  for the *scale* of the errors and uses the variogram only for their *correlation*. If σ
+  is off by a constant factor, the block SDs are off by the same factor. The fitted sill
+  of the standardized errors shows whether this is happening: it should be close to 1. In
+  the authors' synthetic example it is 0.65.
+- **A nugget does not contribute** to the variance of a continuous block average. It only
+  acts at distance zero, which uniformly drawn pairs of points never hit. The estimator
+  targets the continuous block mean (Eq. 2 of the paper), not the mean of a finite number
+  of map cells.
+- **Blocks.** For tiles and zones, the block is the union of its valid cells. For polygons
+  and boxes, it is the exact geometry minus cells without valid input. Points are drawn
+  uniformly inside, and σ is taken from the cell that contains each point, as in the R
+  script. Block predictions are means over the cells whose centres fall in the block.
+- **Monte Carlo.** The default is m = 10,000 pairs per block, as in the paper; the R
+  script uses 1,000. The Monte Carlo standard error, sd(g)/√m, is always reported. Each
+  block has its own random stream, so a block's results don't depend on the other blocks.
+- **Coordinates** must be in a projected CRS, or have no CRS for plain Cartesian units.
+  Distances are Euclidean.
+
+## Class probability maps
+
+Take class *k* with calibrated probability $p_k(s)$ and indicator $I_k(s)$, which is 1
+where the true class is *k*. This mode keeps the continuous method as unchanged as
+possible:
+
+- **Error and SD.** The prediction error is $e_k = I_k - p_k$. Calibration gives it mean
+  zero and $\sigma_k = \sqrt{p_k(1-p_k)}$.
+- **Correlogram.** The standardized errors $e_k/\sigma_k$ are computed at validation
+  locations using out-of-sample probabilities. One variogram, and so one correlogram
+  $\rho_k$, is fitted per class.
+- **Integral.** The variance of the error of the block fraction of class *k* is the same
+  Monte Carlo integral with $\sigma_k$ and $\rho_k$. All classes share the same point
+  pairs.
+- **Predictions.** The expected fraction is the block mean of $p_k$, and the expected
+  class area is $|B|$ times that. Normal prediction intervals are clipped to [0, 1] or
+  [0, |B|].
+
+The probabilities must sum to one and lie strictly between 0 and 1, because $\sigma_k$
+must be positive. Anything else raises `ProbabilityError`. `clip_probabilities` exists,
+but only as an explicit choice; it is never applied automatically.
+
+Only **marginal** per-class uncertainty is modelled. Class fractions in a block sum to
+one, so their errors are negatively correlated, but neither that dependence nor the joint
+distribution of class areas is represented.
+
+Two assumptions are worth stating:
+
+- **Stationary correlation.** The correlation of standardized indicator errors is taken to
+  depend only on distance. For thresholded latent fields it also depends on the
+  probabilities at the two locations, so a fitted correlogram is a stationary
+  approximation. The verification report quantifies its effect.
+- **Calibration.** Temperature-scaled (over- or under-confident) probabilities bias both
+  the expected class areas and σ. The report shows both effects.
+
+## Reference
+
+Wadoux, A. M. J.-C., & Heuvelink, G. B. M. (2023). Uncertainty of spatial averages and
+totals of natural resource maps. *Methods in Ecology and Evolution*, 14, 1320–1332.
+<https://doi.org/10.1111/2041-210X.14106>

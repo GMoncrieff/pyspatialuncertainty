@@ -39,6 +39,16 @@ from pyspatialuncertainty.synthetic.truth import bvn_rectangle, indicator_block_
 from pyspatialuncertainty.variogram.models import VariogramModel, vgm
 
 
+def interval_probability(lower: FloatArray, upper: FloatArray) -> FloatArray:
+    """P(lower < Z ≤ upper) for a standard normal Z, accurate in both tails."""
+    lo = np.asarray(lower, dtype=np.float64)
+    hi = np.asarray(upper, dtype=np.float64)
+    upper_tail = special.ndtr(-lo) - special.ndtr(-hi)
+    lower_tail = special.ndtr(hi) - special.ndtr(lo)
+    out: FloatArray = np.where(lo > 0, upper_tail, lower_tail)
+    return out
+
+
 @dataclass(frozen=True)
 class ClassRealization:
     """One realization of :class:`LatentClassScenario`.
@@ -146,12 +156,15 @@ class LatentClassScenario:
     def p_true(self) -> FloatArray:
         """Calibrated class probabilities (K, n, n)."""
         lim = self.limits
-        return np.stack(
+        p = np.stack(
             [
-                special.ndtr(lim[k + 1] - self.mu) - special.ndtr(lim[k] - self.mu)
+                interval_probability(lim[k] - self.mu, lim[k + 1] - self.mu)
                 for k in range(len(self.classes))
             ]
         )
+        p = np.clip(p, 1e-12, 1.0)
+        out: FloatArray = p / p.sum(axis=0, keepdims=True)
+        return out
 
     def probabilities(self, temperature: float = 1.0) -> xr.DataArray:
         """The probability map handed to the method, optionally temperature-scaled."""
@@ -184,8 +197,7 @@ class LatentClassScenario:
             sd_n = math.sqrt(self.nugget)
             frac = np.stack(
                 [
-                    special.ndtr((lim[k + 1] - y_struct) / sd_n)
-                    - special.ndtr((lim[k] - y_struct) / sd_n)
+                    interval_probability((lim[k] - y_struct) / sd_n, (lim[k + 1] - y_struct) / sd_n)
                     for k in range(k_classes)
                 ]
             )
@@ -246,11 +258,16 @@ class LatentClassScenario:
             c2 = np.concatenate(c2_list)[:n_pairs]
             a1, b1 = lim[k] - mu[c1], lim[k + 1] - mu[c1]
             a2, b2 = lim[k] - mu[c2], lim[k + 1] - mu[c2]
-            p1 = special.ndtr(b1) - special.ndtr(a1)
-            p2 = special.ndtr(b2) - special.ndtr(a2)
+            p1 = interval_probability(a1, b1)
+            p2 = interval_probability(a2, b2)
             r = float(self.latent_correlation(np.array([d]))[0])
             joint = bvn_rectangle(a1, b1, a2, b2, r)
-            out[i] = float(np.mean((joint - p1 * p2) / np.sqrt(p1 * (1 - p1) * p2 * (1 - p2))))
+            denom = np.sqrt(p1 * (1 - p1) * p2 * (1 - p2))
+            ok_d = denom > 1e-12
+            if ok_d.any():
+                out[i] = float(np.mean((joint[ok_d] - p1[ok_d] * p2[ok_d]) / denom[ok_d]))
+            else:
+                out[i] = 0.0
         return out
 
     def oracle_correlation(

@@ -1,0 +1,85 @@
+---
+title: "pyspatialuncertainty"
+subtitle: "Uncertainty of spatial averages and totals of maps"
+---
+
+Many maps of natural resources are aggregated into averages or totals over regions:
+carbon stocks per country, mean soil organic carbon per department, forest area per
+district. Once a map comes with point-level uncertainty, the uncertainty of those
+aggregates **depends strongly on how the map errors are correlated in space**. Averaging
+the point standard deviations overstates it. Treating the errors as independent
+understates it, more and more as the region grows.
+
+`pyspatialuncertainty` implements the Monte Carlo method of
+[Wadoux & Heuvelink (2023)](https://doi.org/10.1111/2041-210X.14106). It works for maps
+made with any method, including machine learning, as long as the method provides
+point-level predictive distributions. For a block *B* it estimates
+
+$$
+\operatorname{var}\Big(\frac{1}{|B|}\int_B \varepsilon(s)\,ds\Big)
+ = \frac{1}{|B|^2}\int_B\int_B \sigma(s)\,\sigma(u)\,\rho(|s-u|)\,ds\,du
+$$
+
+by Monte Carlo integration, where:
+
+- σ is the point-support prediction-error standard deviation;
+- ρ is the correlation function of the standardized prediction errors, fitted to
+  cross-validation or independent validation errors.
+
+It also provides a per-class analogue for maps of calibrated class probabilities. That
+mode gives the uncertainty of expected class fractions and class areas.
+
+## Installation
+
+The package uses [uv](https://docs.astral.sh/uv/) and needs Python ≥ 3.12.
+
+```bash
+git clone https://github.com/GMoncrieff/pyspatialuncertainty
+cd pyspatialuncertainty
+uv sync
+```
+
+## Quick start
+
+```{python}
+import numpy as np
+import polars as pl
+import xarray as xr
+import pyspatialuncertainty as psu
+
+# A 60 x 60 map of predictions and point-support prediction-error SDs (step 2)
+x = np.arange(60) + 0.5
+coords = {"y": x[::-1], "x": x}
+pred = xr.DataArray(10 + 0.1 * np.add.outer(x[::-1], x), coords=coords, dims=("y", "x"))
+sd = xr.DataArray(1 + 0.5 * np.sin(np.add.outer(x[::-1], x) / 20), coords=coords, dims=("y", "x"))
+
+# Standardized validation errors (step 3) and their variogram (step 4)
+rng = np.random.default_rng(1)
+val = pl.DataFrame({"x": rng.uniform(0, 60, 300), "y": rng.uniform(0, 60, 300),
+                    "std_error": rng.normal(size=300)})
+ev = psu.empirical_variogram(val, "std_error", "x", "y")
+model = psu.vgm(0.6, "Exp", 5.0, nugget=0.4)      # in practice: psu.fit_variogram(ev, ...)
+
+# Steps 5-8 for 20 x 20 tiles
+res = psu.aggregate_continuous(sd, model, psu.blocks.tiles(sd, 20), prediction=pred, seed=1)
+res.table.select("block_id", "mean_pred", "sd_mean", "lower", "upper", "sd_total")
+```
+
+## Where to go next
+
+- [Method](method.qmd): the eight steps, the categorical extension, and the conventions
+  used in this package.
+- [Continuous tutorial](tutorials/continuous.qmd): the authors' synthetic example from
+  start to finish.
+- [Class probability tutorial](tutorials/categorical.qmd): uncertainty of class areas.
+- [API reference](reference/index.qmd).
+- [Verification report](report.html): parity with the authors' R script, coverage
+  studies and ablations.
+
+## Citation
+
+If you use this package, please cite the paper:
+
+> Wadoux, A. M. J.-C., & Heuvelink, G. B. M. (2023). Uncertainty of spatial averages and
+> totals of natural resource maps. *Methods in Ecology and Evolution*, 14, 1320–1332.
+> <https://doi.org/10.1111/2041-210X.14106>
