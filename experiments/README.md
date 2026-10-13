@@ -12,6 +12,9 @@ results in `results/`.
 | `run_mc_convergence.py` | Monte Carlo convergence on the R script's own σ map and variogram | <1 min |
 | `summarize.py` | Coverage with cluster-bootstrap CIs, plus SD-ratio summaries, written to `results/summary.parquet` | <1 min |
 
+`improvements/` holds separate experiments that test changes to the method against the
+current procedure. See `improvements/README.md`.
+
 Run them from the repository root, for example:
 
 ```bash
