@@ -2299,17 +2299,21 @@ vertical-align: -.125em;
 </tr>
 <tr class="even">
 <td>Automatic fitting (experiments)</td>
-<td>Nug + {Exp, Sph, Gau}, 4 starting ranges each, best weighted SSE, <code>fit.method = 7</code>. Practical range is bounded by 2× the largest lag and partial sills by 2× the largest γ̂.</td>
+<td>Nug + {Exp, Sph, Gau}, 4 starting ranges each, best weighted SSE, <code>fit.method = 7</code>. Practical range is bounded by 2× the largest lag and partial sills by 2× the largest γ̂. This is the paper’s procedure, <code>fit_correlation(method=&quot;wls&quot;)</code>.</td>
 </tr>
 <tr class="odd">
+<td>Package default for step 4</td>
+<td>Since this report was produced, <code>fit_correlation</code> and <code>fit_class_variograms</code> default to a Gaussian maximum-likelihood fit of Nug + {Exp, Sph, Gau} with the error mean fixed at zero. This report verifies the paper’s WLS procedure. <code>experiments/improvements/</code> in the repository compares the two on the same kind of simulations.</td>
+</tr>
+<tr class="even">
 <td>Blocks</td>
 <td>Tiles, zones, polygons, boxes or the whole domain. Polygons and boxes are sampled exactly (rejection sampling, as <code>spatstat::runifpoint</code>). σ is looked up in the containing cell, as <code>raster::extract</code>.</td>
 </tr>
-<tr class="even">
+<tr class="odd">
 <td>Monte Carlo</td>
 <td>Paired estimator with MCSE = sd(g)/√m. One RNG stream per block. Pairs are shared across classes and estimators.</td>
 </tr>
-<tr class="odd">
+<tr class="even">
 <td>Data structures</td>
 <td>xarray/rioxarray rasters (projected CRS), Polars 2.0.0 tables.</td>
 </tr>
@@ -3098,7 +3102,7 @@ Figure 8: Pipeline ablations: share of variance explained by the trend (R² of 
 </ul>
 <div id="cell-versions" class="cell" data-execution_count="20">
 <div id="versions" class="cell-output cell-output-display cell-output-markdown">
-<p>Software: pyspatialuncertainty 0.1.0, numpy 2.5.4, scipy 1.18.1, xarray 2026.9.0, rioxarray 0.23.0, polars 2.0.0, shapely 2.2.0, scikit-learn 1.9.1. Reference R run: R version 4.3.3 (2024-02-29).</p>
+<p>Software: pyspatialuncertainty 1.0.0, numpy 2.5.4, scipy 1.18.1, xarray 2026.9.0, rioxarray 0.23.0, polars 2.0.0, shapely 2.2.0, scikit-learn 1.9.1. Reference R run: R version 4.3.3 (2024-02-29).</p>
 </div>
 </div>
 </section>

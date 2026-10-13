@@ -62,12 +62,12 @@ coords = {"y": x[::-1], "x": x}
 pred = xr.DataArray(10 + 0.1 * np.add.outer(x[::-1], x), coords=coords, dims=("y", "x"))
 sd = xr.DataArray(1 + 0.5 * np.sin(np.add.outer(x[::-1], x) / 20), coords=coords, dims=("y", "x"))
 
-# Standardized validation errors (step 3) and their variogram (step 4)
+# Standardized validation errors (step 3) and a model of their correlation (step 4).
+# Here the model is set by hand; in practice: model = psu.fit_correlation(val).model
 rng = np.random.default_rng(1)
 val = pl.DataFrame({"x": rng.uniform(0, 60, 300), "y": rng.uniform(0, 60, 300),
                     "std_error": rng.normal(size=300)})
-ev = psu.empirical_variogram(val, "std_error", "x", "y")
-model = psu.vgm(0.6, "Exp", 5.0, nugget=0.4)      # in practice: psu.fit_variogram(ev, ...)
+model = psu.vgm(0.6, "Exp", 5.0, nugget=0.4)
 
 # Steps 5-8 for 20 x 20 tiles
 res = psu.aggregate_continuous(sd, model, psu.blocks.tiles(sd, 20), prediction=pred, seed=1)

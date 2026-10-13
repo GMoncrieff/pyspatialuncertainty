@@ -65,26 +65,34 @@ val = psu.standardized_errors(v, observed="observed", predicted="predicted", sd=
 val.select("x", "y", "observed", "predicted", "sd", "std_error").head()
 ```
 
-## Step 4: variogram of the standardized errors
+## Step 4: correlation of the standardized errors
 
-The sample variogram follows gstat's defaults: a cutoff of 0.33333 × the bounding-box
-diagonal and 15 lag classes. `fit_variogram_auto` tries a nugget plus an exponential,
-spherical or Gaussian structure and keeps the best weighted least-squares fit (gstat's
-`fit.method = 7`). To fit a model of your own choice, use `psu.fit_variogram(ev, start)`.
+`fit_correlation` fits a nugget plus an exponential, spherical or Gaussian structure to
+the standardized errors by Gaussian maximum likelihood. By default the mean of the errors
+is fixed at zero, as unbiased predictions imply. A common offset of the validation errors
+then counts as evidence of long-range correlation, which matters most for large blocks.
+
+The paper fits a sample variogram by weighted least squares instead. That is
+`method="wls"`: a gstat-style sample variogram (a cutoff of 0.33333 × the bounding-box
+diagonal and 15 lag classes) with gstat's `fit.method = 7`, as in the R script. Both
+results carry the sample variogram, for checking the fit visually.
 
 ```{python}
-ev = psu.empirical_variogram(val, "std_error", "x", "y")
-fit = psu.fit_variogram_auto(ev)
+fit = psu.fit_correlation(val)
+wls = psu.fit_correlation(val, method="wls")
+ev = fit.empirical
 print(fit.model)
 print(f"variance of the standardized errors: {val['std_error'].var():.2f}")
 ```
 
 ```{python}
-#| fig-cap: "Sample variogram of the standardized CV errors (dots, sized by number of pairs) and the fitted model."
+#| fig-cap: "Sample variogram of the standardized CV errors (dots, sized by number of pairs), the likelihood fit (default) and the paper's WLS fit."
 h = np.linspace(0, ev.cutoff, 200)
 fig, ax = plt.subplots(figsize=(6, 3.2))
 ax.scatter(ev.dist, ev.gamma, s=ev.n_pairs / 10, color=BLUE, zorder=3)
-ax.plot(h[1:], fit.model.gamma(h[1:]), color=BLUE)
+ax.plot(h[1:], fit.model.gamma(h[1:]), color=BLUE, label="likelihood (default)")
+ax.plot(h[1:], wls.model.gamma(h[1:]), color=ORANGE, ls="--", label="WLS (paper)")
+ax.legend(frameon=False, loc="lower right")
 ax.axhline(1.0, color="#8a8984", lw=1, ls="--")
 ax.annotate("sill expected if σ is calibrated", (ev.cutoff, 1.0), ha="right", va="bottom", color="#52514e")
 ax.set_xlabel("distance"); ax.set_ylabel("semivariance"); ax.set_ylim(0, 1.15)
@@ -134,7 +142,8 @@ long-range part of the correlation. A short-range model that fits the first few 
 classes well can miss it. The R script's hand-set model has a nugget, a short exponential
 structure, and weak spherical (range 15) and exponential (range 60) structures. Below, the
 same nested model is fitted to this realization's sample variogram, with the ranges held
-fixed and only the sills fitted.
+fixed and only the sills fitted, and compared with the likelihood fit and the paper's
+automatic WLS fit.
 :::
 
 ```{python}
@@ -144,18 +153,24 @@ nested = psu.fit_variogram(ev, nested_start, fit_ranges=False)
 print(nested.model)
 dom_nested = psu.aggregate_continuous(real.sd, nested.model, psu.blocks.box(0, 0, 100, 100, real.sd),
                                       prediction=real.prediction, n_mc=10_000, seed=1)
-pl.DataFrame({"correlogram": ["automatic (single structure)", "nested, R-script ranges"],
-              "sd_of_domain_mean": [domain.table["sd_mean"][0], dom_nested.table["sd_mean"][0]],
-              "mcse_sd": [domain.table["mcse_sd"][0], dom_nested.table["mcse_sd"][0]]})
+dom_wls = psu.aggregate_continuous(real.sd, wls.model, psu.blocks.box(0, 0, 100, 100, real.sd),
+                                   prediction=real.prediction, n_mc=10_000, seed=1)
+results = [domain, dom_wls, dom_nested]
+pl.DataFrame({"correlogram": ["likelihood fit (default)", "WLS fit (paper)", "nested, R-script ranges"],
+              "sd_of_domain_mean": [r.table["sd_mean"][0] for r in results],
+              "mcse_sd": [r.table["mcse_sd"][0] for r in results]})
 ```
 
 In this realization the error of the domain mean,
 `{python} f"{float(real.truth.mean()) - domain.table['mean_pred'][0]:.3f}"`, is
 `{python} f"{abs(float(real.truth.mean()) - domain.table['mean_pred'][0]) / domain.table['sd_mean'][0]:.1f}"`
-standard deviations under the automatic fit and
+standard deviations under the likelihood fit,
+`{python} f"{abs(float(real.truth.mean()) - domain.table['mean_pred'][0]) / dom_wls.table['sd_mean'][0]:.1f}"`
+under the WLS fit and
 `{python} f"{abs(float(real.truth.mean()) - domain.table['mean_pred'][0]) / dom_nested.table['sd_mean'][0]:.1f}"`
-under the nested fit. The [verification report](../report.html) quantifies this effect
-across many realizations.
+under the nested fit. The [verification report](../report.html) quantifies the effect of
+the correlogram tail across many realizations, and `experiments/improvements/` in the
+repository compares the likelihood and WLS fits.
 
 ```{python}
 tiles = psu.aggregate_continuous(real.sd, fit.model, psu.blocks.tiles(real.sd, 25),

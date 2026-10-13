@@ -12,13 +12,23 @@ package.
 | 1 | Quantify the point-support prediction uncertainty, e.g. with a quantile regression forest or conformal prediction | your model |
 | 2 | Compute the prediction-error SD σ(s) at prediction and validation locations | `sd_from_samples`, `sd_from_quantiles` |
 | 3 | Standardize the validation errors: (observed − predicted) / σ, using cross-validated or independent predictions | `standardized_errors` |
-| 4 | Fit a variogram to the standardized errors and convert it to a correlation function, ρ(h) = (sill − γ(h)) / sill | `empirical_variogram`, `fit_variogram`, `vgm`, `from_variogram` |
+| 4 | Model the correlation of the standardized errors and convert the fitted variogram model to a correlation function, ρ(h) = (sill − γ(h)) / sill | `fit_correlation` (likelihood by default; `method="wls"` for the paper's variogram fit), `empirical_variogram`, `fit_variogram`, `vgm` |
 | 5–6 | Estimate $\frac{1}{|B|^2}\iint_B \sigma(s)\sigma(u)\rho(|s-u|)\,ds\,du$ as the mean of σ(S)σ(U)ρ(\|S − U\|) over *m* pairs of uniform points | `aggregate_continuous`, `mc_block_variance` |
 | 7 | Variance of the block total = \|B\|² × variance of the block average | `aggregate_continuous` |
 | 8 | Report SDs and normal prediction intervals (central limit theorem) | `aggregate_continuous`, `normal_interval` |
 
 ### Conventions
 
+- **Step 4 uses a likelihood fit by default.** `fit_correlation` fits a nugget plus an
+  exponential, spherical or Gaussian structure to the standardized errors by Gaussian
+  maximum likelihood, with their mean fixed at zero, as unbiased predictions and
+  calibrated probabilities imply. A common offset of the validation errors then counts as
+  evidence of long-range correlation, the part of the error that dominates large blocks.
+  The paper fits a sample variogram by weighted least squares instead. That is
+  `method="wls"`, which reproduces the authors' R script. In simulations with known truth
+  (`experiments/improvements/` in the repository), the likelihood fit gave better
+  calibrated block intervals and about half the error in block SDs. Its cost grows as n³
+  in the number of validation points n; it warns above 2,000 points.
 - **Variograms follow gstat.** The defaults are a cutoff of 0.33333 × the bounding-box
   diagonal and a lag width of cutoff/15. Lag classes are upper-inclusive. The models
   (`Nug`, `Exp`, `Sph`, `Gau`, `Mat`, `Ste`) use gstat's parameterisation of the range.
@@ -52,8 +62,8 @@ possible:
 - **Error and SD.** The prediction error is $e_k = I_k - p_k$. Calibration gives it mean
   zero and $\sigma_k = \sqrt{p_k(1-p_k)}$.
 - **Correlogram.** The standardized errors $e_k/\sigma_k$ are computed at validation
-  locations using out-of-sample probabilities. One variogram, and so one correlogram
-  $\rho_k$, is fitted per class.
+  locations using out-of-sample probabilities. One correlogram $\rho_k$ is fitted per
+  class (`fit_class_variograms`, by default with the zero-mean likelihood fit).
 - **Integral.** The variance of the error of the block fraction of class *k* is the same
   Monte Carlo integral with $\sigma_k$ and $\rho_k$. All classes share the same point
   pairs.

@@ -194,7 +194,8 @@ marginal per-class uncertainty is modelled.
 | Component | Choice |
 |---|---|
 | Variograms | Own implementation following gstat. Models `Nug`, `Exp`, `Sph`, `Gau`, `Mat`, `Ste` use gstat's range parameter. Sample variograms use cutoff = 0.33333 × bbox diagonal and width = cutoff/15, with upper-inclusive lag classes. WLS uses `fit.method` 1/2/6/7. |
-| Automatic fitting (experiments) | Nug + {Exp, Sph, Gau}, 4 starting ranges each, best weighted SSE, `fit.method = 7`. Practical range is bounded by 2× the largest lag and partial sills by 2× the largest γ̂. |
+| Automatic fitting (experiments) | Nug + {Exp, Sph, Gau}, 4 starting ranges each, best weighted SSE, `fit.method = 7`. Practical range is bounded by 2× the largest lag and partial sills by 2× the largest γ̂. This is the paper's procedure, `fit_correlation(method="wls")`. |
+| Package default for step 4 | Since this report was produced, `fit_correlation` and `fit_class_variograms` default to a Gaussian maximum-likelihood fit of Nug + {Exp, Sph, Gau} with the error mean fixed at zero. This report verifies the paper's WLS procedure. `experiments/improvements/` in the repository compares the two on the same kind of simulations. |
 | Blocks | Tiles, zones, polygons, boxes or the whole domain. Polygons and boxes are sampled exactly (rejection sampling, as `spatstat::runifpoint`). σ is looked up in the containing cell, as `raster::extract`. |
 | Monte Carlo | Paired estimator with MCSE = sd(g)/√m. One RNG stream per block. Pairs are shared across classes and estimators. |
 | Data structures | xarray/rioxarray rasters (projected CRS), Polars 2.0.0 tables. |

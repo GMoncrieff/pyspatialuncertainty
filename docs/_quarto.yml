@@ -84,6 +84,10 @@ quartodoc:
         - Gaussian
         - Matern
         - MaternStein
+        - fit_correlation
+        - CorrelationFit
+        - fit_likelihood
+        - LikelihoodFit
         - empirical_variogram
         - EmpiricalVariogram
         - fit_variogram

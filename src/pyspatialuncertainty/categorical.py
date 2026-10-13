@@ -35,17 +35,10 @@ from pyspatialuncertainty.continuous import block_means
 from pyspatialuncertainty.correlation import CorrelationFunction, as_correlation
 from pyspatialuncertainty.integrate import Integrand, mc_block_variance
 from pyspatialuncertainty.intervals import normal_interval, z_value
-from pyspatialuncertainty.variogram.empirical import (
-    EmpiricalVariogram,
-    Estimator,
-    empirical_variogram,
-)
-from pyspatialuncertainty.variogram.fit import (
-    FitMethod,
-    VariogramFit,
-    fit_variogram,
-    fit_variogram_auto,
-)
+from pyspatialuncertainty.variogram.correlation_fit import CorrelationMethod, fit_correlation
+from pyspatialuncertainty.variogram.empirical import EmpiricalVariogram, Estimator
+from pyspatialuncertainty.variogram.fit import FitMethod, VariogramFit
+from pyspatialuncertainty.variogram.likelihood import LikelihoodFit, MeanModel
 from pyspatialuncertainty.variogram.models import VariogramModel
 
 
@@ -253,11 +246,21 @@ def indicator_errors(
 
 @dataclass(frozen=True)
 class ClassVariogram:
-    """Sample variogram and fitted model of the standardized errors of one class."""
+    """Sample variogram and fitted model of the standardized errors of one class.
+
+    Attributes
+    ----------
+    cls
+        The class label.
+    empirical
+        Sample variogram of the standardized indicator errors.
+    fit
+        The `LikelihoodFit` (default) or the WLS `VariogramFit`.
+    """
 
     cls: Hashable
     empirical: EmpiricalVariogram
-    fit: VariogramFit
+    fit: LikelihoodFit | VariogramFit
 
     @property
     def model(self) -> VariogramModel:
@@ -268,44 +271,62 @@ class ClassVariogram:
 def fit_class_variograms(
     errors: pl.DataFrame,
     *,
+    method: CorrelationMethod | None = None,
+    mean: MeanModel = "zero",
     model: VariogramModel | Mapping[Hashable, VariogramModel] | None = None,
     cutoff: float | None = None,
     width: float | None = None,
     estimator: Estimator = "matheron",
     fit_method: FitMethod = 7,
 ) -> dict[Hashable, ClassVariogram]:
-    """Fit one variogram per class to standardized indicator errors (step 4, per class).
+    """Fit one correlation model per class to standardized indicator errors (step 4).
+
+    Each class is fitted with `fit_correlation`: by default a Gaussian likelihood fit with
+    the mean of the errors fixed at zero, which calibrated probabilities imply.
 
     Parameters
     ----------
     errors
         Output of `indicator_errors`.
+    method
+        ``"likelihood"`` or ``"wls"`` (the paper's weighted least-squares variogram fit).
+        The default is ``"likelihood"``, or ``"wls"`` when a starting ``model`` is given.
+    mean
+        Likelihood only: ``"zero"`` (ML) or ``"constant"`` (REML).
     model
-        Initial model(s): one model for all classes, a mapping per class, or ``None`` to
-        select automatically among nugget + exponential/spherical/Gaussian models
+        WLS only: starting model(s), one for all classes or a mapping per class. Without
+        one, the WLS fit chooses among nugget + exponential/spherical/Gaussian models
         (`fit_variogram_auto`).
     cutoff, width, estimator
         Passed to `empirical_variogram`.
     fit_method
-        gstat weighting scheme for the fit.
+        WLS only: gstat weighting scheme.
 
     Returns
     -------
     dict
         Class label → `ClassVariogram`.
     """
+    if method is None:
+        method = "likelihood" if model is None else "wls"
     out: dict[Hashable, ClassVariogram] = {}
     for cls in errors["class"].unique(maintain_order=True).to_list():
         sub = errors.filter(pl.col("class") == cls)
-        ev = empirical_variogram(
-            sub, "std_error", "x", "y", cutoff=cutoff, width=width, estimator=estimator
+        start = model[cls] if isinstance(model, Mapping) else model
+        fit = fit_correlation(
+            sub,
+            "std_error",
+            "x",
+            "y",
+            method=method,
+            mean=mean,
+            model=start,
+            fit_method=fit_method,
+            cutoff=cutoff,
+            width=width,
+            estimator=estimator,
         )
-        if model is None:
-            fit = fit_variogram_auto(ev, fit_method=fit_method)
-        else:
-            start = model[cls] if isinstance(model, Mapping) else model
-            fit = fit_variogram(ev, start, fit_method=fit_method)
-        out[cls] = ClassVariogram(cls=cls, empirical=ev, fit=fit)
+        out[cls] = ClassVariogram(cls=cls, empirical=fit.empirical, fit=fit.details)
     return out
 
 

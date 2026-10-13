@@ -90,6 +90,11 @@ errors.head()
 
 ## One correlogram per class
 
+`fit_class_variograms` fits each class with `fit_correlation`. By default this is a
+Gaussian likelihood fit with the mean of the errors fixed at zero, which calibrated
+probabilities imply. `method="wls"` gives the paper's weighted least-squares variogram
+fit instead. The sample variograms are shown for checking.
+
 ```{python}
 fits = psu.fit_class_variograms(errors)
 fig, axes = plt.subplots(1, 3, figsize=(10, 2.9), constrained_layout=True)
