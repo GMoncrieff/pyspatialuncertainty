@@ -1,6 +1,6 @@
 [project]
 name = "pyspatialuncertainty"
-version = "0.1.0"
+version = "1.0.0"
 description = "Uncertainty of spatial averages and totals of maps (Wadoux & Heuvelink, 2023): Monte Carlo integration of point-support prediction error covariances over blocks, for continuous and categorical maps."
 readme = "README.md"
 license = "MIT"
@@ -16,7 +16,7 @@ keywords = [
     "variogram",
 ]
 classifiers = [
-    "Development Status :: 3 - Alpha",
+    "Development Status :: 5 - Production/Stable",
     "Intended Audience :: Science/Research",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.12",

@@ -4,6 +4,8 @@ message: >-
   and optionally the software itself.
 title: "pyspatialuncertainty: uncertainty of spatial averages and totals of maps"
 type: software
+version: "1.0.0"
+date-released: "2026-10-13"
 license: MIT
 repository-code: "https://github.com/GMoncrieff/pyspatialuncertainty"
 authors:
