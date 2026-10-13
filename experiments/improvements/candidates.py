@@ -15,6 +15,7 @@ from __future__ import annotations
 import math
 from collections.abc import Sequence
 from dataclasses import dataclass
+from typing import Literal
 
 import numpy as np
 from scipy import linalg, optimize, special
@@ -134,19 +135,27 @@ def distance_matrix(x: np.ndarray, y: np.ndarray) -> np.ndarray:
     return np.hypot(x[:, None] - x[None, :], y[:, None] - y[None, :])
 
 
-def reml(
+def likelihood_fit(
     x: np.ndarray,
     y: np.ndarray,
     z: np.ndarray,
     *,
     models: Sequence[str] = MODELS,
     max_practical: float | None = None,
+    mean: Literal["constant", "zero"] = "constant",
 ) -> VariogramModel:
-    """Gaussian REML fit of Nug + model with a constant mean; best model by REML likelihood.
+    """Gaussian likelihood fit of Nug + model; the best model by likelihood is returned.
 
     The covariance is s²·[(1 − η)ρ_a(h) + η·1(h = 0)]. The sill s² is profiled out
     analytically, and η and a are optimised: first on a coarse grid, then with L-BFGS-B.
     Practical ranges are bounded by twice the bounding-box diagonal.
+
+    With ``mean="constant"`` this is REML with an unknown constant mean, which, like the
+    sample variogram, ignores any common offset of the errors. With ``mean="zero"`` it is
+    ML with the mean fixed at zero, as the method assumes for standardized errors (unbiased
+    predictions, calibrated probabilities). A common offset in the validation errors then
+    counts as evidence of long-range correlation, which is the error component that
+    dominates large blocks.
     """
     n = z.size
     D = distance_matrix(x, y)
@@ -167,11 +176,14 @@ def reml(
         except linalg.LinAlgError:
             return 1e300, math.nan
         kz = linalg.cho_solve(c, z, check_finite=False)
+        logdet = 2.0 * float(np.sum(np.log(np.diag(c[0]))))
+        if mean == "zero":
+            q = max(float(z @ kz), 1e-300)
+            return 0.5 * (n * math.log(q) + logdet), q / n
         k1 = linalg.cho_solve(c, one, check_finite=False)
         s11 = float(one @ k1)
         s1z = float(one @ kz)
         q = max(float(z @ kz) - s1z**2 / s11, 1e-300)
-        logdet = 2.0 * float(np.sum(np.log(np.diag(c[0]))))
         return 0.5 * ((n - 1) * math.log(q) + logdet + math.log(s11)), q / (n - 1)
 
     best: tuple[float, str, np.ndarray, float] | None = None

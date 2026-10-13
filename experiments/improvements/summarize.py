@@ -13,7 +13,7 @@ Each (scenario, class, block group) cell counts equally. For every scenario and 
 Paired differences against ``current`` are taken per realization, with standard errors
 over realizations: ``d_cov`` (coverage) and ``d_msl`` (mean squared log ratio).
 
-Usage: ``uv run python -m experiments.improvements.summarize [--quick]``
+Usage: ``uv run python -m experiments.improvements.summarize --round 2 [--quick]``
 """
 
 from __future__ import annotations
@@ -27,8 +27,8 @@ from experiments.improvements.run import RESULTS
 CELL = ["mode", "scenario", "variant", "class", "group"]
 
 
-def load(kind: str, suffix: str = "") -> pl.DataFrame:
-    files = sorted(RESULTS.glob(f"*_{kind}{suffix}.parquet"))
+def load(kind: str, round_: int = 2, suffix: str = "") -> pl.DataFrame:
+    files = sorted((RESULTS / f"round{round_}").glob(f"*_{kind}{suffix}.parquet"))
     return pl.concat(
         [pl.read_parquet(f).with_columns(pl.col("class").cast(pl.String)) for f in files],
         how="diagonal_relaxed",
@@ -109,15 +109,19 @@ def overall(score: pl.DataFrame) -> pl.DataFrame:
 
 def main() -> None:
     ap = argparse.ArgumentParser()
+    ap.add_argument("--round", type=int, default=2)
     ap.add_argument("--quick", action="store_true", help="summarise the smoke-test outputs")
-    suffix = "_quick" if ap.parse_args().quick else ""
-    blocks, reals = load("blocks", suffix), load("realizations", suffix)
+    args = ap.parse_args()
+    suffix = "_quick" if args.quick else ""
+    blocks = load("blocks", args.round, suffix)
+    reals = load("realizations", args.round, suffix)
     cell = cells(blocks, reals)
     score = scorecard(cell, paired(reals))
     over = overall(score)
-    cell.write_parquet(RESULTS / f"summary_cells{suffix}.parquet")
-    score.write_parquet(RESULTS / f"scorecard{suffix}.parquet")
-    over.write_parquet(RESULTS / f"overall{suffix}.parquet")
+    out = RESULTS / f"round{args.round}"
+    cell.write_parquet(out / f"summary_cells{suffix}.parquet")
+    score.write_parquet(out / f"scorecard{suffix}.parquet")
+    over.write_parquet(out / f"overall{suffix}.parquet")
     pl.Config.set_tbl_rows(200)
     pl.Config.set_tbl_cols(20)
     pl.Config.set_tbl_width_chars(200)

@@ -12,10 +12,14 @@ It also records coverage per realization and block group, which gives paired sta
 errors. The true SD comes from the exact block SD (continuous Gaussian scenarios) or the
 RMSE of the block error over realizations (pipeline and categorical scenarios).
 
+Round 1 compares single changes to the correlogram step. Round 2 adds a likelihood fit
+with the error mean fixed at zero and keeps the round-1 leaders. Results go to
+``results/round<n>/``.
+
 Usage (from the repository root)::
 
-    uv run --group experiments python -m experiments.improvements.run --mode continuous
-    uv run --group experiments python -m experiments.improvements.run --mode categorical
+    uv run --group experiments python -m experiments.improvements.run --mode continuous --round 2
+    uv run --group experiments python -m experiments.improvements.run --mode categorical --round 2
     # --quick for a smoke test, --scenarios a,b to select scenarios
 """
 
@@ -68,8 +72,15 @@ SCENARIOS: dict[str, dict[str, dict[str, Any]]] = {
         "range64": BASE_CAT | {"range": 64.0},
     },
 }
-FIT_VARIANTS = ["current", "wls_npairs", "wls_cressie", "exp_only", "sigma_weighted", "reml"]
-# plus "rescale" (both modes) and "pooled" (categorical)
+# Correlogram fits per round, plus derived variants: "rescale" (both modes) and "pooled"
+# (categorical only).
+ROUNDS: dict[int, dict[str, list[str]]] = {
+    1: {
+        "fits": ["current", "wls_npairs", "wls_cressie", "exp_only", "sigma_weighted", "reml"],
+        "extras": ["rescale", "pooled"],
+    },
+    2: {"fits": ["current", "wls_npairs", "reml", "ml_zero_mean"], "extras": []},
+}
 
 
 # ---------------------------------------------------------------------------
@@ -119,28 +130,33 @@ def grid_setup(mode: str, params: dict[str, Any]) -> dict[str, Any]:
 
 
 def fit_models(
-    p: cand.Pairs, x: np.ndarray, y: np.ndarray, e: np.ndarray, s: np.ndarray
+    names: list[str], p: cand.Pairs, x: np.ndarray, y: np.ndarray, e: np.ndarray, s: np.ndarray
 ) -> dict[str, psu.VariogramModel]:
     z = e / s
     ev = cand.matheron(p, z)
-    return {
-        "current": cand.wls(ev),
-        "wls_npairs": cand.wls(ev, fit_method=1),
-        "wls_cressie": cand.wls(ev, fit_method=2),
-        "exp_only": cand.wls(ev, models=("Exp",)),
-        "sigma_weighted": cand.wls(cand.sigma_weighted(p, e, s)),
-        "reml": cand.reml(x, y, z),
+    fits = {
+        "current": lambda: cand.wls(ev),
+        "wls_npairs": lambda: cand.wls(ev, fit_method=1),
+        "wls_cressie": lambda: cand.wls(ev, fit_method=2),
+        "exp_only": lambda: cand.wls(ev, models=("Exp",)),
+        "sigma_weighted": lambda: cand.wls(cand.sigma_weighted(p, e, s)),
+        "reml": lambda: cand.likelihood_fit(x, y, z),
+        "ml_zero_mean": lambda: cand.likelihood_fit(x, y, z, mean="zero"),
     }
+    return {name: fits[name]() for name in names}
 
 
-def block_sds(variances: dict[str, np.ndarray], rescale: float) -> dict[str, np.ndarray]:
+def block_sds(
+    variances: dict[str, np.ndarray], rescale: float, extras: list[str]
+) -> dict[str, np.ndarray]:
     """Block SDs of every variant from the MC variances, plus the rescaled current SD.
 
     ``rescale`` is the mean squared standardized validation error, which estimates
     (true σ / σ handed to the method)².
     """
     out = {name: np.sqrt(np.maximum(v, 0.0)) for name, v in variances.items()}
-    out["rescale"] = out["current"] * np.sqrt(rescale)
+    if "rescale" in extras:
+        out["rescale"] = out["current"] * np.sqrt(rescale)
     return out
 
 
@@ -167,10 +183,11 @@ def realization_continuous(
         sd_map = setup["sd_user"]
         s = sd_map[v["cell"].to_numpy()]
         err = setup["eb"].block_means(real.error_sub)
-    models = fit_models(cand.pairs(x, y), x, y, e, s)
+    models = fit_models(setup["fits"], cand.pairs(x, y), x, y, e, s)
     integrands = [psu.Integrand(sd_map, cand.correlation(m)) for m in models.values()]
     mc = psu.mc_block_variance(resolved, integrands, n_mc=N_MC, seed=rng)
-    sds = block_sds(dict(zip(models, mc.variance, strict=True)), float(np.mean((e / s) ** 2)))
+    variances = dict(zip(models, mc.variance, strict=True))
+    sds = block_sds(variances, float(np.mean((e / s) ** 2)), setup["extras"])
     return err[None, :], {k: v[None, :] for k, v in sds.items()}
 
 
@@ -192,24 +209,30 @@ def realization_categorical(
         pk = p_user[k, cell]
         sk = np.sqrt(pk * (1.0 - pk))
         ek = (labels == cls).astype(np.float64) - pk
-        per_class.append(fit_models(p, x, y, ek, sk))
+        per_class.append(fit_models(setup["fits"], p, x, y, ek, sk))
         zs.append(ek / sk)
         rescale.append(float(np.mean((ek / sk) ** 2)))
-    pooled_model = cand.wls(cand.pooled(p, zs))
-    names = [*FIT_VARIANTS, "pooled"]
+    names = list(setup["fits"])
+    if "pooled" in setup["extras"]:
+        names.append("pooled")
+        pooled_model = cand.wls(cand.pooled(p, zs))
+        per_class = [m | {"pooled": pooled_model} for m in per_class]
     integrands = []
     for k in range(K):
-        models = per_class[k] | {"pooled": pooled_model}
+        models = per_class[k]
         integrands += [psu.Integrand(sd_user[k], cand.correlation(models[n])) for n in names]
     mc = psu.mc_block_variance(resolved, integrands, n_mc=N_MC, seed=rng)
     var = mc.variance.reshape(K, len(names), -1)
     truth = np.stack([eb.block_means(real.fraction_sub[k]) for k in range(K)])
-    per_k = [block_sds(dict(zip(names, var[k], strict=True)), rescale[k]) for k in range(K)]
+    per_k = [
+        block_sds(dict(zip(names, var[k], strict=True)), rescale[k], setup["extras"])
+        for k in range(K)
+    ]
     return truth - pred, {n: np.stack([sds[n] for sds in per_k]) for n in per_k[0]}
 
 
 def worker(task: dict[str, Any]) -> dict[str, Any]:
-    setup = grid_setup(task["mode"], task["params"])
+    setup = grid_setup(task["mode"], task["params"]) | ROUNDS[task["round"]]
     fn = realization_continuous if task["mode"] == "continuous" else realization_categorical
     errs: list[np.ndarray] = []
     res: dict[str, list[np.ndarray]] = {}
@@ -287,6 +310,7 @@ def main() -> None:
     ap.add_argument("--mode", choices=["continuous", "categorical"], required=True)
     ap.add_argument("--scenarios", default=None, help="comma-separated subset")
     ap.add_argument("--realizations", type=int, default=200)
+    ap.add_argument("--round", type=int, choices=sorted(ROUNDS), default=2)
     ap.add_argument("--quick", action="store_true")
     args = ap.parse_args()
     for var in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "POLARS_MAX_THREADS"):
@@ -295,7 +319,8 @@ def main() -> None:
     names = args.scenarios.split(",") if args.scenarios else list(scen)
     n_real = 4 if args.quick else args.realizations
     suffix = "_quick" if args.quick else ""
-    RESULTS.mkdir(parents=True, exist_ok=True)
+    out_dir = RESULTS / f"round{args.round}"
+    out_dir.mkdir(parents=True, exist_ok=True)
     for name in names:
         t0 = time.time()
         params = scen[name]
@@ -303,6 +328,7 @@ def main() -> None:
         tasks = [
             {
                 "mode": args.mode,
+                "round": args.round,
                 "params": params,
                 "scenario_index": si,
                 "start": a,
@@ -329,10 +355,10 @@ def main() -> None:
             blocks.append(b)
             reals.append(r)
         pl.concat(blocks, how="diagonal_relaxed").write_parquet(
-            RESULTS / f"{args.mode}_{name}_blocks{suffix}.parquet", compression="zstd"
+            out_dir / f"{args.mode}_{name}_blocks{suffix}.parquet", compression="zstd"
         )
         pl.concat(reals, how="diagonal_relaxed").write_parquet(
-            RESULTS / f"{args.mode}_{name}_realizations{suffix}.parquet", compression="zstd"
+            out_dir / f"{args.mode}_{name}_realizations{suffix}.parquet", compression="zstd"
         )
         print(
             f"[{args.mode}] {name}: {n_real} realizations in {time.time() - t0:.0f} s", flush=True
