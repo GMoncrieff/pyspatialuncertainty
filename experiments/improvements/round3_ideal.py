@@ -11,8 +11,8 @@ simple random validation sample:
   clipped to [0.001, 0.999] as a user would.
 
 Stage 3 (``--stage designs``) draws the validation sample with other designs:
-``stratified`` (mapped class, equal allocation), ``clustered`` (30 clusters of 10 within
-4 cells), ``roads`` (within 2 cells of 3 random lines), ``half`` (western half),
+``stratified`` (mapped class, equal allocation), ``clustered`` (clusters of 10 points
+within 4 cells), ``roads`` (within 2 cells of 3 random lines), ``half`` (western half),
 ``confident`` (∝ (max p)⁴, or σ⁻² for continuous maps) and ``informative`` (×5 inclusion
 where the true class is the rare one; categorical only).
 
@@ -89,6 +89,13 @@ DESIGNS = {
     "categorical": ("stratified", "clustered", "roads", "half", "confident", "informative"),
 }
 DESIGN_MAPS = {"continuous": ("baseline",), "categorical": ("rare3", "rare3_shift")}
+CLUSTER_SIZE = 10  # clustered design: clusters of 10 points within 4 cells
+N_DEFAULT = 300  # validation size of the round-2 scenarios (seeds reproduce round 2)
+SIZES = (50, 100, 200, 400)  # validation-size axis (common random numbers across sizes)
+SIZED_CORE = {
+    "continuous": ("baseline", "bias"),
+    "categorical": ("baseline", "rare3", "rare3_shift", "rare3_omission"),
+}
 
 
 # ---------------------------------------------------------------------------
@@ -107,8 +114,10 @@ def transform_rare(p: np.ndarray, shift: float = 0.0, slope: float = 1.0) -> np.
 
 
 @functools.cache
-def setup(mode: str, name: str) -> dict[str, Any]:
+def setup(mode: str, name: str, n: int | None = None) -> dict[str, Any]:
     _, params = CORE[mode][name]
+    if n is not None:
+        params = params | {"n_validation": n}
     if params.get("pipeline"):
         from experiments.run_pipeline import make_blocks, make_scenario
 
@@ -231,7 +240,7 @@ def sample_nodes(
         while len(chosen) < n:
             cxy = rng.uniform(0, layout.extent, 2)
             near = np.flatnonzero((np.hypot(x - cxy[0], y - cxy[1]) <= 4.0) & ~taken)
-            pick = rng.choice(near, min(n // 30, near.size, n - len(chosen)), replace=False)
+            pick = rng.choice(near, min(CLUSTER_SIZE, near.size, n - len(chosen)), replace=False)
             taken[pick] = True
             chosen.extend(pick.tolist())
         return np.array(chosen)
@@ -439,8 +448,9 @@ def realization(
     name: str,
     design: str,
     rng: np.random.Generator,
+    n: int | None = None,
 ) -> tuple[dict[str, np.ndarray], dict[tuple[str, str], tuple[np.ndarray, np.ndarray]]]:
-    st = setup(mode, name)
+    st = setup(mode, name, n)
     bmat = block_matrix(mode, name)
     cx, cy = st["cx"], st["cy"]
     arms: dict[tuple[str, str], tuple[np.ndarray, np.ndarray]] = {}
@@ -561,7 +571,7 @@ def worker(task: dict[str, Any]) -> dict[str, Any]:
     for i in range(task["start"], task["stop"]):
         seed = [SEED, si, i] if design == "random" else [SEED, si, i, 1000 + task["design_index"]]
         rng = np.random.default_rng(seed)
-        err, arms = realization(mode, name, design, rng)
+        err, arms = realization(mode, name, design, rng, task["n"])
         for cls, e in err.items():
             errs.setdefault(cls, []).append(e)
         for key, (shift, sd) in arms.items():
@@ -574,11 +584,28 @@ def worker(task: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def run_cells(stage: str, cells: list[tuple[str, str, str]], n_real: int, quick: bool) -> None:
+def cell_stem(mode: str, name: str, design: str, n: int) -> str:
+    return (
+        f"{mode}_{name}"
+        + ("" if design == "random" else f"_{design}")
+        + ("" if n == N_DEFAULT else f"_n{n}")
+    )
+
+
+def run_cells(
+    stage: str,
+    cells: list[tuple[str, str, str, int]],
+    n_real: int,
+    quick: bool,
+    skip_existing: bool = False,
+) -> None:
     out_dir = RESULTS3 / stage
     out_dir.mkdir(parents=True, exist_ok=True)
     suffix = "_quick" if quick else ""
-    for mode, name, design in cells:
+    for mode, name, design, n in cells:
+        stem = cell_stem(mode, name, design, n)
+        if skip_existing and (out_dir / f"{stem}_realizations{suffix}.parquet").exists():
+            continue
         t0 = time.time()
         di = DESIGNS[mode].index(design) if design != "random" else -1
         tasks = [
@@ -587,6 +614,7 @@ def run_cells(stage: str, cells: list[tuple[str, str, str]], n_real: int, quick:
                 "name": name,
                 "design": design,
                 "design_index": di,
+                "n": None if n == N_DEFAULT else n,
                 "start": a,
                 "stop": b,
             }
@@ -603,13 +631,13 @@ def run_cells(stage: str, cells: list[tuple[str, str, str]], n_real: int, quick:
                 "mode": mode,
                 "scenario": name,
                 "design": design,
+                "n": n,
                 "arm": arm,
                 "class": cls or None,
             }
             b, r = metrics(errs[cls] - shift, sds[(arm, cls)], groups, keys)
             blocks.append(b)
             reals.append(r)
-        stem = f"{mode}_{name}" + ("" if design == "random" else f"_{design}")
         pl.concat(blocks, how="diagonal_relaxed").write_parquet(
             out_dir / f"{stem}_blocks{suffix}.parquet", compression="zstd"
         )
@@ -623,7 +651,7 @@ def run_cells(stage: str, cells: list[tuple[str, str, str]], n_real: int, quick:
 # Summary
 # ---------------------------------------------------------------------------
 
-CELL = ["mode", "scenario", "design", "arm", "class", "group"]
+CELL = ["mode", "scenario", "design", "n", "arm", "class", "group"]
 
 
 def summarize(stage: str, quick: bool = False) -> None:
@@ -643,9 +671,9 @@ def summarize(stage: str, quick: bool = False) -> None:
         .agg(
             (pl.col("n_cov").sum() / pl.col("n_blocks").sum()).alias("coverage"),
             (pl.col("sum_log_ratio_sq").sum() / pl.col("n_blocks").sum()).sqrt().alias("lr_rms"),
-            pl.col("n_blocks").sum().alias("n"),
+            pl.col("n_blocks").sum().alias("n_obs"),
         )
-        .filter(pl.col("n") > 0)
+        .filter(pl.col("n_obs") > 0)
     )
     b = blocks.group_by(CELL).agg(
         pl.col("width").mean(),
@@ -665,7 +693,7 @@ def summarize(stage: str, quick: bool = False) -> None:
         (pl.col("rmse") / pl.col("r0")).alias("rel_rmse"),
     )
     score = (
-        cell.group_by("mode", "scenario", "design", "arm")
+        cell.group_by("mode", "scenario", "design", "n", "arm")
         .agg(
             pl.col("coverage").mean(),
             (pl.col("coverage") - 0.9).abs().mean().alias("cov_err"),
@@ -674,7 +702,7 @@ def summarize(stage: str, quick: bool = False) -> None:
             pl.col("rel_width").mean(),
             pl.col("rel_rmse").mean(),
         )
-        .sort("mode", "scenario", "design", "cov_err")
+        .sort("mode", "scenario", "design", "n", "cov_err")
     )
 
     def table(df: pl.DataFrame) -> list[str]:
@@ -690,18 +718,19 @@ def summarize(stage: str, quick: bool = False) -> None:
         "group); `rel_width` and `rel_rmse` are relative to `current` in the same cell.",
         "",
     ]
-    for (mode, scen, design), sub in score.group_by(
-        "mode", "scenario", "design", maintain_order=True
+    for (mode, scen, design, n), sub in score.group_by(
+        "mode", "scenario", "design", "n", maintain_order=True
     ):
-        lines += [f"## {mode}: {scen}" + ("" if design == "random" else f", {design} sample"), ""]
+        title = f"## {mode}: {scen}, n = {n}" + ("" if design == "random" else f", {design} sample")
+        lines += [title, ""]
         lines += table(
-            sub.drop("mode", "scenario", "design").with_columns(pl.col(pl.Float64).round(3))
+            sub.drop("mode", "scenario", "design", "n").with_columns(pl.col(pl.Float64).round(3))
         )
         lines += [""]
     rare = cell.filter(
         (pl.col("mode") == "categorical")
         & pl.col("group").is_in(["tile_64", "tile_128"])
-        & (pl.col("class") == pl.col("class").max().over("scenario", "design"))
+        & (pl.col("class") == pl.col("class").max().over("scenario", "design", "n"))
     )
     if rare.height:
         lines += ["## Rarest class at 64- and 128-cell tiles: coverage (median SD ratio)", ""]
@@ -711,8 +740,8 @@ def summarize(stage: str, quick: bool = False) -> None:
                     "{} ({})", pl.col("coverage").round(3), pl.col("ratio_med").round(2)
                 ).alias("v")
             )
-            .pivot(on="arm", index=["scenario", "design", "group"], values="v")
-            .sort("scenario", "design", "group")
+            .pivot(on="arm", index=["scenario", "design", "n", "group"], values="v")
+            .sort("scenario", "design", "n", "group")
         )
         lines += table(piv)
     out = RESULTS3 / stage / f"scorecard{suffix}.md"
@@ -726,19 +755,30 @@ def main() -> None:
     ap.add_argument("--summarize", choices=["core", "designs"], default=None)
     ap.add_argument("--realizations", type=int, default=None)
     ap.add_argument("--quick", action="store_true")
-    ap.add_argument("--cells", default=None, help="comma-separated mode:scenario[:design]")
+    ap.add_argument("--cells", default=None, help="comma-separated mode:scenario[:design[:n]]")
+    ap.add_argument("--skip-existing", action="store_true")
     args = ap.parse_args()
     for var in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "POLARS_MAX_THREADS"):
         os.environ.setdefault(var, "1")
     if args.stage:
         if args.cells:
-            cells = [tuple(([*c.split(":"), "random"])[:3]) for c in args.cells.split(",")]
+            cells = []
+            for c in args.cells.split(","):
+                parts = [*c.split(":"), "random", str(N_DEFAULT)]
+                cells.append((parts[0], parts[1], parts[2], int(parts[3])))
         elif args.stage == "core":
-            cells = [(m, s, "random") for m in CORE for s in CORE[m]]
+            cells = [(m, s, "random", N_DEFAULT) for m in CORE for s in CORE[m]]
+            cells += [(m, s, "random", n) for m in SIZED_CORE for s in SIZED_CORE[m] for n in SIZES]
         else:
-            cells = [(m, s, d) for m in DESIGNS for s in DESIGN_MAPS[m] for d in DESIGNS[m]]
+            cells = [
+                (m, s, d, n)
+                for m in DESIGNS
+                for s in DESIGN_MAPS[m]
+                for d in DESIGNS[m]
+                for n in (N_DEFAULT, *SIZES)
+            ]
         n_real = 4 if args.quick else (args.realizations or (200 if args.stage == "core" else 150))
-        run_cells(args.stage, cells, n_real, args.quick)  # type: ignore[arg-type]
+        run_cells(args.stage, cells, n_real, args.quick, args.skip_existing)
     if args.summarize:
         summarize(args.summarize, args.quick)
 
