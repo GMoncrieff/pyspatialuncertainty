@@ -9,6 +9,8 @@ maps and Monte Carlo point pairs:
 * ``ok`` / ``ok_nc``: REML correlogram with an unknown constant mean, corrected block
   estimate, with / without the cross term of the variance;
 * ``ok_strata`` / ``ok_strata_nc`` (categorical): the same with mapped-class means;
+* ``ok_logit`` / ``ok_logit_nc`` (categorical): the same with the linearised
+  logistic-recalibration mean [σ, σ·logit p];
 * ``ppi``: block map mean + mean residual of the points in the block (≥ 20 points);
 * ``olofsson`` (categorical, holdout workflows): post-stratified estimator per block.
 
@@ -73,7 +75,21 @@ def safe(fn: Callable[[], Any]) -> Any:
 # ---------------------------------------------------------------------------
 
 
-def fit_set(x: np.ndarray, y: np.ndarray, z: np.ndarray, Xs: np.ndarray | None) -> dict[str, Any]:
+def logit_design(p: np.ndarray, eps: float = 1e-3) -> np.ndarray:
+    """Linearised logistic recalibration of a class probability: design [σ, σ·logit p]
+    with σ = √(p(1-p)) (see ``round3_ideal.logit_design``)."""
+    q = np.clip(p, eps, 1.0 - eps)
+    s = np.sqrt(q * (1.0 - q))
+    return np.column_stack([s, s * np.log(q / (1.0 - q))])
+
+
+def fit_set(
+    x: np.ndarray,
+    y: np.ndarray,
+    z: np.ndarray,
+    Xs: np.ndarray | None,
+    Xl: np.ndarray | None = None,
+) -> dict[str, Any]:
     """The correlogram fits and GLS terms that depend only on the residual set."""
     ones = np.ones((z.size, 1))
     m0 = safe(lambda: cand.likelihood_fit(x, y, z, mean="zero"))
@@ -84,6 +100,10 @@ def fit_set(x: np.ndarray, y: np.ndarray, z: np.ndarray, Xs: np.ndarray | None) 
         m2 = safe(lambda: cand.likelihood_fit(x, y, z, X=Xs)) if Xs.shape[1] > 1 else m1
         g2 = safe(lambda: cand.gls_terms(m2, x, y, z, Xs)) if m2 is not None else None
         out |= {"m2": m2, "g2": g2}
+    if Xl is not None:
+        m3 = safe(lambda: cand.likelihood_fit(x, y, z, X=Xl))
+        g3 = safe(lambda: cand.gls_terms(m3, x, y, z, Xl)) if m3 is not None else None
+        out |= {"m3": m3, "g3": g3}
     return out
 
 
@@ -98,8 +118,10 @@ def arms_for_class(
     x_cells_strata: np.ndarray | None,
     d_cells: np.ndarray,
     variances: dict[str, np.ndarray],
+    x_cells_logit: np.ndarray | None = None,
 ) -> dict[str, tuple[np.ndarray, np.ndarray]]:
-    """(shift, sd) per block for current / ok / ok_nc (/ ok_strata / ok_strata_nc)."""
+    """(shift, sd) per block for current / ok / ok_nc (/ ok_strata / ok_logit and their
+    ``_nc`` variants)."""
     bmat = block_matrix()
     nb = bmat.shape[0]
     zero = np.zeros(nb)
@@ -113,6 +135,7 @@ def arms_for_class(
     for arm, mkey, gkey, xc in (
         ("ok", "m1", "g1", ones),
         ("ok_strata", "m2", "g2", x_cells_strata),
+        ("ok_logit", "m3", "g3", x_cells_logit),
     ):
         if xc is None:
             continue
@@ -173,32 +196,40 @@ def evaluate(
     x_cells_strata = cand.design_rows(map_class, kept)
     per_class = []
     integrands, keys = [], []
+    logit_integrands, logit_keys = [], []
     for k, cls in enumerate(CLASSES):
         pk = res.pred[:, k]
         sk = np.sqrt(pk * (1.0 - pk))
         ek = (res.observed == k).astype(np.float64) - pk
         zk = ek / sk
         if f"fits_{k}" not in fits_cache:
-            fits_cache[f"fits_{k}"] = fit_set(x, y, zk, Xs)
+            fits_cache[f"fits_{k}"] = fit_set(x, y, zk, Xs, logit_design(pk))
         fits = fits_cache[f"fits_{k}"]
         map_pk = mp.pred[:, k]
         map_sk = np.sqrt(map_pk * (1.0 - map_pk))
-        per_class.append((cls, fits, map_sk, ek))
+        per_class.append((cls, fits, map_sk, ek, logit_design(map_pk)))
         for key in ("m0", "m1", "m2"):
             if fits.get(key) is not None:
                 integrands.append(psu.Integrand(map_sk, cand.correlation(fits[key])))
                 keys.append((k, key))
+        if fits.get("m3") is not None:
+            logit_integrands.append(psu.Integrand(map_sk, cand.correlation(fits["m3"])))
+            logit_keys.append((k, "m3"))
         map_means[cls] = np.asarray(bmat @ map_pk)
-    mc = psu.mc_block_variance(w.resolved, integrands, n_mc=N_MC, seed=mc_seed)
-    var_by = dict(zip(keys, mc.variance, strict=True))
-    for k, (cls, fits, map_sk, ek) in enumerate(per_class):
-        variances = {key: var_by[(k, key)] for key in ("m0", "m1", "m2") if (k, key) in var_by}
+    # the ok_logit integrands come last, so the other arms keep their Monte Carlo pairs
+    mc = psu.mc_block_variance(w.resolved, integrands + logit_integrands, n_mc=N_MC, seed=mc_seed)
+    var_by = dict(zip(keys + logit_keys, mc.variance, strict=True))
+    for k, (cls, fits, map_sk, ek, x_cells_logit) in enumerate(per_class):
+        variances = {
+            key: var_by[(k, key)] for key in ("m0", "m1", "m2", "m3") if (k, key) in var_by
+        }
         for arm, val in arms_for_class(
             fits=fits,
             sd_map=map_sk,
             x_cells_strata=x_cells_strata,
             d_cells=d_cells,
             variances=variances,
+            x_cells_logit=x_cells_logit,
         ).items():
             arms[(arm, cls)] = val
         arms[("ppi", cls)] = cand.ppi_blocks(w.resolved, res.cells, ek)
