@@ -22,7 +22,9 @@ across sizes) are added for the scenarios in ``SIZED_CORE`` and the (map, design
 
 Arms, on shared realizations and Monte Carlo pairs: ``current`` (zero-mean ML, known
 mean), ``ok`` (REML + unknown constant mean), ``ok_strata`` (mapped-class means),
-``ok_ml0`` (the correction on the zero-mean ML fit), ``oracle`` (true σ and true
+``ok_logit`` (linearised logistic recalibration
+[σ, σ·logit p] as the mean; categorical), ``_nc`` variants of the corrected arms without the
+cross term, ``ok_ml0`` (the correction on the zero-mean ML fit), ``oracle`` (true σ and true
 correlogram, known mean), ``oracle_ok`` (true correlogram, the method's σ, unknown
 mean), ``ppi`` and ``olofsson``. The existing scenarios keep the round-2 seeds, so
 ``current`` reproduces round 2's ``ml_zero_mean``.
@@ -375,6 +377,15 @@ def terms_callable(
     return shift, added
 
 
+def logit_design(p: np.ndarray) -> np.ndarray:
+    """Linearised logistic recalibration of a class probability map: a calibration curve
+    logit p_true = logit p + a + b·logit p changes p by about p(1-p)(a + b·logit p), so the
+    standardised error has mean σ(a + b·logit p) with σ = √(p(1-p)); design [σ, σ·logit p]."""
+    q = np.clip(p, P_CLIP, 1.0 - P_CLIP)
+    s = np.sqrt(q * (1.0 - q))
+    return np.column_stack([s, s * special.logit(q)])
+
+
 def corrected(
     bmat: Any,
     sd: np.ndarray,
@@ -383,8 +394,9 @@ def corrected(
     d_cells: np.ndarray,
     g: Any,
     variance: np.ndarray,
+    cross: bool = True,
 ) -> tuple[np.ndarray, np.ndarray]:
-    shift, added = cand.unknown_mean_terms(bmat, sd, xc, model, d_cells, g)
+    shift, added = cand.unknown_mean_terms(bmat, sd, xc, model, d_cells, g, cross=cross)
     return shift, np.sqrt(np.maximum(variance + added, 0.0))
 
 
@@ -402,9 +414,12 @@ def class_arms(
     x_cells_strata: np.ndarray | None,
     oracle: tuple[Any, float, bool],
     mc_seed: Any,
+    Xl: np.ndarray | None = None,
+    x_cells_logit: np.ndarray | None = None,
 ) -> dict[str, tuple[np.ndarray, np.ndarray]]:
     """Arms for one variable (continuous map or one class). ``oracle`` is (correlation,
-    limit at 0, is_variogram_model)."""
+    limit at 0, is_variogram_model); ``Xl``/``x_cells_logit`` the logistic-recalibration
+    design [σ, σ·logit p] at the validation points and cells (categorical)."""
     nb = len(st["resolved"])
     n = z.size
     ones_v, ones_c = np.ones((n, 1)), np.ones((sd_map.size, 1))
@@ -418,6 +433,8 @@ def class_arms(
     g2 = (
         safe(lambda: cand.gls_terms(m2, x, y, z, Xs)) if m2 is not None and Xs is not None else None
     )
+    m3 = safe(lambda: cand.likelihood_fit(x, y, z, X=Xl)) if Xl is not None else None
+    g3 = safe(lambda: cand.gls_terms(m3, x, y, z, Xl)) if m3 is not None else None
     ocorr, orho0, o_is_model = oracle
     integrands: list[psu.Integrand] = []
     keys: list[str] = []
@@ -428,21 +445,30 @@ def class_arms(
     o_corr_fn = cand.correlation(ocorr) if o_is_model else ocorr
     integrands += [psu.Integrand(sd_true, o_corr_fn), psu.Integrand(sd_map, o_corr_fn)]
     keys += ["oracle", "oracle_user"]
+    if m3 is not None:  # appended last: the other integrands keep their Monte Carlo pairs
+        integrands.append(psu.Integrand(sd_map, cand.correlation(m3)))
+        keys.append("m3")
     mc = psu.mc_block_variance(st["resolved"], integrands, n_mc=N_MC, seed=mc_seed)
     var = dict(zip(keys, mc.variance, strict=True))
     zero = np.zeros(nb)
     out: dict[str, tuple[np.ndarray, np.ndarray]] = {}
     out["current"] = (zero, np.sqrt(np.maximum(var["m0"], 0))) if m0 is not None else nan_pair(nb)
-    out["ok"] = corrected(bmat, sd_map, ones_c, m1, d_cells, g1, var["m1"]) if g1 else nan_pair(nb)
     out["ok_ml0"] = (
         corrected(bmat, sd_map, ones_c, m0, d_cells, g0, var["m0"]) if g0 else nan_pair(nb)
     )
-    if x_cells_strata is not None:
-        out["ok_strata"] = (
-            corrected(bmat, sd_map, x_cells_strata, m2, d_cells, g2, var["m2"])
-            if g2
-            else nan_pair(nb)
-        )
+    for arm, xc, m, g, key in (
+        ("ok", ones_c, m1, g1, "m1"),
+        ("ok_strata", x_cells_strata, m2, g2, "m2"),
+        ("ok_logit", x_cells_logit, m3, g3, "m3"),
+    ):
+        if xc is None:
+            continue
+        for suffix, cross in (("", True), ("_nc", False)):
+            out[arm + suffix] = (
+                corrected(bmat, sd_map, xc, m, d_cells, g, var[key], cross)
+                if g is not None
+                else nan_pair(nb)
+            )
     out["oracle"] = (zero, np.sqrt(np.maximum(var["oracle"], 0)))
     if o_is_model:
         go = cand.gls_terms(ocorr, x, y, z, ones_v)
@@ -540,6 +566,7 @@ def realization(
         sk = np.sqrt(pk * (1 - pk))
         ek = (labels == cls).astype(np.float64) - pk
         oc, rho0 = oracle_corr(name, k)
+        x_cells_logit = logit_design(st["p_user"][k])
         res = class_arms(
             st=st,
             x=x,
@@ -553,6 +580,8 @@ def realization(
             x_cells_strata=x_cells_strata,
             oracle=(oc, rho0, False),
             mc_seed=mc_root.spawn(1)[0],
+            Xl=x_cells_logit[cells],
+            x_cells_logit=x_cells_logit,
         )
         for arm, val in res.items():
             arms[(arm, cls)] = val
