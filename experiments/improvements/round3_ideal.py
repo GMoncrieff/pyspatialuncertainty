@@ -16,6 +16,10 @@ within 4 cells), ``roads`` (within 2 cells of 3 random lines), ``half`` (western
 ``confident`` (∝ (max p)⁴, or σ⁻² for continuous maps) and ``informative`` (×5 inclusion
 where the true class is the rare one; categorical only).
 
+Validation sizes 50/100/200/400 (``SIZES``, 100 realizations, common random numbers
+across sizes) are added for the scenarios in ``SIZED_CORE`` and the (map, design) pairs in
+``SIZED_DESIGNS``; the other cells use n = 300.
+
 Arms, on shared realizations and Monte Carlo pairs: ``current`` (zero-mean ML, known
 mean), ``ok`` (REML + unknown constant mean), ``ok_strata`` (mapped-class means),
 ``ok_ml0`` (the correction on the zero-mean ML fit), ``oracle`` (true σ and true
@@ -96,6 +100,13 @@ SIZED_CORE = {
     "continuous": ("baseline", "bias"),
     "categorical": ("baseline", "rare3", "rare3_shift", "rare3_omission"),
 }
+SIZED_DESIGNS = {  # (map, design) pairs of Stage 3 that get the size axis
+    "continuous": tuple(("baseline", d) for d in DESIGNS["continuous"]),
+    "categorical": tuple(
+        ("rare3_shift", d) for d in ("stratified", "clustered", "roads", "confident")
+    ),
+}
+N_REAL_SIZED = 100  # realizations of the cells with n != N_DEFAULT
 
 
 # ---------------------------------------------------------------------------
@@ -771,14 +782,21 @@ def main() -> None:
             cells += [(m, s, "random", n) for m in SIZED_CORE for s in SIZED_CORE[m] for n in SIZES]
         else:
             cells = [
-                (m, s, d, n)
-                for m in DESIGNS
-                for s in DESIGN_MAPS[m]
-                for d in DESIGNS[m]
-                for n in (N_DEFAULT, *SIZES)
+                (m, s, d, N_DEFAULT) for m in DESIGNS for s in DESIGN_MAPS[m] for d in DESIGNS[m]
             ]
-        n_real = 4 if args.quick else (args.realizations or (200 if args.stage == "core" else 150))
-        run_cells(args.stage, cells, n_real, args.quick, args.skip_existing)
+            cells += [
+                (m, s, d, n) for m in SIZED_DESIGNS for s, d in SIZED_DESIGNS[m] for n in SIZES
+            ]
+        for cell in cells:
+            if args.quick:
+                n_real = 4
+            elif args.realizations:
+                n_real = args.realizations
+            elif cell[3] != N_DEFAULT:
+                n_real = N_REAL_SIZED
+            else:
+                n_real = 200 if args.stage == "core" else 150
+            run_cells(args.stage, [cell], n_real, args.quick, args.skip_existing)
     if args.summarize:
         summarize(args.summarize, args.quick)
 
