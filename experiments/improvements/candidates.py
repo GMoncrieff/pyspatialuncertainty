@@ -7,7 +7,9 @@ The current procedure fits a correlogram in three steps:
 3. ρ = (sill − γ)/sill.
 
 Each candidate here replaces one of these parts and keeps the rest; intervals stay normal,
-prediction ± z·SD. Nothing in this module is used by the package.
+prediction ± z·SD. Round 3 adds the "unknown mean" correction (GLS estimate of the mean of
+the standardized errors, possibly per stratum, with the exact variance of the corrected
+block estimate) and design-based references. Nothing in this module is used by the package.
 """
 
 from __future__ import annotations
@@ -18,7 +20,7 @@ from dataclasses import dataclass
 from typing import Literal
 
 import numpy as np
-from scipy import linalg, optimize, special
+from scipy import linalg, optimize, sparse, special
 
 import pyspatialuncertainty as psu
 from pyspatialuncertainty.variogram.empirical import GSTAT_CUTOFF_FRACTION, EmpiricalVariogram
@@ -143,6 +145,7 @@ def likelihood_fit(
     models: Sequence[str] = MODELS,
     max_practical: float | None = None,
     mean: Literal["constant", "zero"] = "constant",
+    X: np.ndarray | None = None,
 ) -> VariogramModel:
     """Gaussian likelihood fit of Nug + model; the best model by likelihood is returned.
 
@@ -156,8 +159,13 @@ def likelihood_fit(
     predictions, calibrated probabilities). A common offset in the validation errors then
     counts as evidence of long-range correlation, which is the error component that
     dominates large blocks.
+
+    With a design matrix ``X`` (n × q, full column rank) the fit is REML for the mean
+    x(s)ᵀβ: the profile objective is (n − q)·log Q + log det K + log det XᵀK⁻¹X, with Q the
+    GLS residual quadratic form. ``X`` overrides ``mean``.
     """
     n = z.size
+    q_cols = 0 if X is None else int(X.shape[1])
     D = distance_matrix(x, y)
     diag_len = math.hypot(float(np.ptp(x)), float(np.ptp(y)))
     if max_practical is None:
@@ -177,6 +185,16 @@ def likelihood_fit(
             return 1e300, math.nan
         kz = linalg.cho_solve(c, z, check_finite=False)
         logdet = 2.0 * float(np.sum(np.log(np.diag(c[0]))))
+        if X is not None:
+            kx = linalg.cho_solve(c, X, check_finite=False)
+            xtkx = X.T @ kx
+            sign, logdet_x = np.linalg.slogdet(xtkx)
+            if sign <= 0:
+                return 1e300, math.nan
+            xtkz = X.T @ kz
+            qf = max(float(z @ kz) - float(xtkz @ np.linalg.solve(xtkx, xtkz)), 1e-300)
+            m = n - q_cols
+            return 0.5 * (m * math.log(qf) + logdet + logdet_x), qf / m
         if mean == "zero":
             q = max(float(z @ kz), 1e-300)
             return 0.5 * (n * math.log(q) + logdet), q / n
@@ -214,3 +232,167 @@ def likelihood_fit(
     eta = float(special.expit(theta[0]))
     a = math.exp(theta[1])
     return psu.vgm((1.0 - eta) * s2, code, a, nugget=eta * s2)  # type: ignore[arg-type]
+
+
+# ---------------------------------------------------------------------------
+# Round 3: unknown mean of the standardized errors
+# ---------------------------------------------------------------------------
+
+
+def structured_correlation(model: VariogramModel, D: np.ndarray) -> np.ndarray:
+    """ρ(h) between distinct points, with the limit (1 − nugget share) at h = 0.
+
+    Used for covariances between the continuous block error (no nugget) and validation
+    errors, and between distinct validation points at the same location.
+    """
+    if not model.sill > 0:
+        return np.zeros_like(D)
+    rho = np.asarray(correlation(model)(D), dtype=np.float64)
+    return np.where(D > 0, rho, 1.0 - model.nugget / model.sill)
+
+
+@dataclass(frozen=True)
+class GLS:
+    """GLS estimate of the mean parameters β of the standardized errors.
+
+    Attributes
+    ----------
+    beta
+        β̂ = A XᵀK⁻¹z.
+    A
+        (XᵀK⁻¹X)⁻¹, the covariance of β̂ in the unit-variance convention.
+    G
+        A XᵀK⁻¹ (q × n): β̂ = G z.
+    """
+
+    beta: np.ndarray
+    A: np.ndarray
+    G: np.ndarray
+
+
+def gls_terms(
+    model: VariogramModel, x: np.ndarray, y: np.ndarray, z: np.ndarray, X: np.ndarray
+) -> GLS:
+    """GLS mean of z under the fitted correlation (nugget on the diagonal)."""
+    D = distance_matrix(x, y)
+    K = structured_correlation(model, D)
+    K[np.diag_indices_from(K)] = 1.0 + 1e-10
+    c = linalg.cho_factor(K, lower=True, check_finite=False)
+    kx = linalg.cho_solve(c, X, check_finite=False)
+    A = np.linalg.inv(X.T @ kx)
+    G = A @ kx.T
+    return GLS(beta=G @ z, A=A, G=G)
+
+
+def block_average_matrix(blocks: Sequence[psu.ResolvedBlock], n_cells: int) -> sparse.csr_matrix:
+    """Sparse (n_blocks × n_cells) matrix averaging cell values over each block's cells."""
+    rows, cols, vals = [], [], []
+    for b, blk in enumerate(blocks):
+        if blk.cells.size:
+            rows.append(np.full(blk.cells.size, b))
+            cols.append(blk.cells)
+            vals.append(np.full(blk.cells.size, 1.0 / blk.cells.size))
+    return sparse.csr_matrix(
+        (np.concatenate(vals), (np.concatenate(rows), np.concatenate(cols))),
+        shape=(len(blocks), n_cells),
+    )
+
+
+def unknown_mean_terms(
+    bmat: sparse.csr_matrix,
+    sd_cells: np.ndarray,
+    x_cells: np.ndarray,
+    model: VariogramModel,
+    d_cells: np.ndarray,
+    gls: GLS,
+    *,
+    cross: bool = True,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Shift and added variance of the corrected block estimate, per block.
+
+    shift_B = x_Bᵀβ̂ and added variance x_BᵀA x_B − 2 x_BᵀG c_B, where x_B is the block mean
+    of σ(s)x(s) and c_B,i the block mean of σ(s)ρ(|s − x_i|), both by cell quadrature
+    (exact for tiles). The block variance V_B is added by the caller. ``d_cells`` holds the
+    distances from every cell centre to every validation point.
+    """
+    xb = np.asarray(bmat @ (sd_cells[:, None] * x_cells))
+    shift = xb @ gls.beta
+    added = np.einsum("bi,ij,bj->b", xb, gls.A, xb)
+    if cross:
+        cb = np.asarray(bmat @ (sd_cells[:, None] * structured_correlation(model, d_cells)))
+        added = added - 2.0 * np.einsum("bq,qn,bn->b", xb, gls.G, cb)
+    return shift, added
+
+
+def strata_design(labels: np.ndarray, n_min: int = 5) -> tuple[np.ndarray, np.ndarray]:
+    """Intercept plus indicators of strata with at least ``n_min`` points (reference: the
+    most frequent stratum; smaller strata are pooled with it).
+
+    Returns the kept stratum codes (excluding the reference) and the n × q design matrix.
+    """
+    codes, counts = np.unique(labels, return_counts=True)
+    ref = codes[np.argmax(counts)]
+    kept = np.array([c for c, k in zip(codes, counts, strict=True) if k >= n_min and c != ref])
+    return kept, design_rows(labels, kept)
+
+
+def design_rows(labels: np.ndarray, kept: np.ndarray) -> np.ndarray:
+    """Design rows [1, 1(label = k) for k in kept] for arbitrary locations."""
+    cols = [np.ones(labels.size)] + [(labels == k).astype(np.float64) for k in kept]
+    return np.column_stack(cols)
+
+
+def ppi_blocks(
+    blocks: Sequence[psu.ResolvedBlock], val_cells: np.ndarray, resid: np.ndarray, n_min: int = 20
+) -> tuple[np.ndarray, np.ndarray]:
+    """PPI per block: shift = mean residual of the points in the block, SE = sd/√n_B.
+
+    Blocks with fewer than ``n_min`` points get NaN.
+    """
+    shift = np.full(len(blocks), np.nan)
+    sd = np.full(len(blocks), np.nan)
+    for b, blk in enumerate(blocks):
+        r = resid[np.isin(val_cells, blk.cells)]
+        if r.size >= n_min:
+            shift[b] = r.mean()
+            sd[b] = r.std(ddof=1) / math.sqrt(r.size)
+    return shift, sd
+
+
+def olofsson_blocks(
+    blocks: Sequence[psu.ResolvedBlock],
+    map_class: np.ndarray,
+    map_p: np.ndarray,
+    val_cells: np.ndarray,
+    val_is_k: np.ndarray,
+    n_classes: int,
+    n_min: int = 20,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Olofsson et al. (2014) post-stratified estimator of class k's area share per block.
+
+    Strata are the mapped classes. Returns the shift relative to the block mean of the map
+    probability ``map_p`` (cells) and the SE; NaN unless the block has ≥ ``n_min`` points
+    and every stratum present in the block has ≥ 2 of them.
+    """
+    shift = np.full(len(blocks), np.nan)
+    sd = np.full(len(blocks), np.nan)
+    val_class = map_class[val_cells]
+    for b, blk in enumerate(blocks):
+        inside = np.isin(val_cells, blk.cells)
+        if inside.sum() < n_min:
+            continue
+        w = np.bincount(map_class[blk.cells], minlength=n_classes) / blk.cells.size
+        est, var, ok = 0.0, 0.0, True
+        for h in np.flatnonzero(w > 0):
+            sel = inside & (val_class == h)
+            nh = int(sel.sum())
+            if nh < 2:
+                ok = False
+                break
+            phk = float(val_is_k[sel].mean())
+            est += w[h] * phk
+            var += w[h] ** 2 * phk * (1.0 - phk) / (nh - 1)
+        if ok:
+            shift[b] = est - float(map_p[blk.cells].mean())
+            sd[b] = math.sqrt(var)
+    return shift, sd
