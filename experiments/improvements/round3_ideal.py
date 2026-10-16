@@ -22,12 +22,12 @@ across sizes) are added for the scenarios in ``SIZED_CORE`` and the (map, design
 
 Arms, on shared realizations and Monte Carlo pairs: ``current`` (zero-mean ML, known
 mean), ``ok`` (REML + unknown constant mean), ``ok_strata`` (mapped-class means),
-``ok_logit`` (linearised logistic recalibration
-[σ, σ·logit p] as the mean; categorical), ``_nc`` variants of the corrected arms without the
-cross term, ``ok_ml0`` (the correction on the zero-mean ML fit), ``oracle`` (true σ and true
-correlogram, known mean), ``oracle_ok`` (true correlogram, the method's σ, unknown
-mean), ``ppi`` and ``olofsson``. The existing scenarios keep the round-2 seeds, so
-``current`` reproduces round 2's ``ml_zero_mean``.
+``ok_logit`` (linearised logistic recalibration [σ, σ·logit p] as the mean, GLS on the
+``ok`` correlogram; categorical), ``_nc`` variants of the corrected arms without the cross
+term, ``ok_ml0`` (the correction on the zero-mean ML fit), ``oracle`` (true σ and true
+correlogram, known mean), ``oracle_ok`` (true correlogram, the method's σ, unknown mean),
+``ppi`` and ``olofsson``. The existing scenarios keep the round-2 seeds, so ``current``
+reproduces round 2's ``ml_zero_mean``.
 
 Usage::
 
@@ -433,8 +433,11 @@ def class_arms(
     g2 = (
         safe(lambda: cand.gls_terms(m2, x, y, z, Xs)) if m2 is not None and Xs is not None else None
     )
-    m3 = safe(lambda: cand.likelihood_fit(x, y, z, X=Xl)) if Xl is not None else None
-    g3 = safe(lambda: cand.gls_terms(m3, x, y, z, Xl)) if m3 is not None else None
+    # ok_logit shares the constant-mean correlogram: a REML refit with the logit design can
+    # trade the smooth trend for a long-range, high-sill correlogram and wild coefficients
+    g3 = (
+        safe(lambda: cand.gls_terms(m1, x, y, z, Xl)) if m1 is not None and Xl is not None else None
+    )
     ocorr, orho0, o_is_model = oracle
     integrands: list[psu.Integrand] = []
     keys: list[str] = []
@@ -445,9 +448,6 @@ def class_arms(
     o_corr_fn = cand.correlation(ocorr) if o_is_model else ocorr
     integrands += [psu.Integrand(sd_true, o_corr_fn), psu.Integrand(sd_map, o_corr_fn)]
     keys += ["oracle", "oracle_user"]
-    if m3 is not None:  # appended last: the other integrands keep their Monte Carlo pairs
-        integrands.append(psu.Integrand(sd_map, cand.correlation(m3)))
-        keys.append("m3")
     mc = psu.mc_block_variance(st["resolved"], integrands, n_mc=N_MC, seed=mc_seed)
     var = dict(zip(keys, mc.variance, strict=True))
     zero = np.zeros(nb)
@@ -459,7 +459,7 @@ def class_arms(
     for arm, xc, m, g, key in (
         ("ok", ones_c, m1, g1, "m1"),
         ("ok_strata", x_cells_strata, m2, g2, "m2"),
-        ("ok_logit", x_cells_logit, m3, g3, "m3"),
+        ("ok_logit", x_cells_logit, m1, g3, "m1"),
     ):
         if xc is None:
             continue

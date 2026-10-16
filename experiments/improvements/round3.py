@@ -10,7 +10,7 @@ maps and Monte Carlo point pairs:
   estimate, with / without the cross term of the variance;
 * ``ok_strata`` / ``ok_strata_nc`` (categorical): the same with mapped-class means;
 * ``ok_logit`` / ``ok_logit_nc`` (categorical): the same with the linearised
-  logistic-recalibration mean [σ, σ·logit p];
+  logistic-recalibration mean [σ, σ·logit p], GLS on the ``ok`` correlogram;
 * ``ppi``: block map mean + mean residual of the points in the block (≥ 20 points);
 * ``olofsson`` (categorical, holdout workflows): post-stratified estimator per block.
 
@@ -100,10 +100,9 @@ def fit_set(
         m2 = safe(lambda: cand.likelihood_fit(x, y, z, X=Xs)) if Xs.shape[1] > 1 else m1
         g2 = safe(lambda: cand.gls_terms(m2, x, y, z, Xs)) if m2 is not None else None
         out |= {"m2": m2, "g2": g2}
-    if Xl is not None:
-        m3 = safe(lambda: cand.likelihood_fit(x, y, z, X=Xl))
-        g3 = safe(lambda: cand.gls_terms(m3, x, y, z, Xl)) if m3 is not None else None
-        out |= {"m3": m3, "g3": g3}
+    if Xl is not None:  # ok_logit: GLS on the constant-mean correlogram (stable; see round3_ideal)
+        g3 = safe(lambda: cand.gls_terms(m1, x, y, z, Xl)) if m1 is not None else None
+        out |= {"m3": m1, "g3": g3}
     return out
 
 
@@ -196,7 +195,6 @@ def evaluate(
     x_cells_strata = cand.design_rows(map_class, kept)
     per_class = []
     integrands, keys = [], []
-    logit_integrands, logit_keys = [], []
     for k, cls in enumerate(CLASSES):
         pk = res.pred[:, k]
         sk = np.sqrt(pk * (1.0 - pk))
@@ -212,17 +210,13 @@ def evaluate(
             if fits.get(key) is not None:
                 integrands.append(psu.Integrand(map_sk, cand.correlation(fits[key])))
                 keys.append((k, key))
-        if fits.get("m3") is not None:
-            logit_integrands.append(psu.Integrand(map_sk, cand.correlation(fits["m3"])))
-            logit_keys.append((k, "m3"))
         map_means[cls] = np.asarray(bmat @ map_pk)
-    # the ok_logit integrands come last, so the other arms keep their Monte Carlo pairs
-    mc = psu.mc_block_variance(w.resolved, integrands + logit_integrands, n_mc=N_MC, seed=mc_seed)
-    var_by = dict(zip(keys + logit_keys, mc.variance, strict=True))
+    mc = psu.mc_block_variance(w.resolved, integrands, n_mc=N_MC, seed=mc_seed)
+    var_by = dict(zip(keys, mc.variance, strict=True))
     for k, (cls, fits, map_sk, ek, x_cells_logit) in enumerate(per_class):
-        variances = {
-            key: var_by[(k, key)] for key in ("m0", "m1", "m2", "m3") if (k, key) in var_by
-        }
+        variances = {key: var_by[(k, key)] for key in ("m0", "m1", "m2") if (k, key) in var_by}
+        if "m1" in variances:
+            variances["m3"] = variances["m1"]  # ok_logit shares the ok correlogram
         for arm, val in arms_for_class(
             fits=fits,
             sd_map=map_sk,
