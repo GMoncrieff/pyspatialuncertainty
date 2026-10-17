@@ -13,6 +13,9 @@ default for step 4, in `fit_correlation` and `fit_class_variograms`. The package
 implementation (`fit_likelihood`) gives the same fits as `candidates.likelihood_fit`.
 `method="wls"` keeps the paper's procedure, which reproduces the authors' R script.
 
+Round 3 tests an estimated calibration (an unknown mean) for a separate holdout sample; see
+[Round 3](#round-3-estimated-calibration-an-unknown-mean). Its adoption is pending.
+
 ## How the variants are judged
 
 Every variant of a scenario is run on the same setup, so differences between variants are
@@ -209,6 +212,188 @@ Coverage by scenario:
   long-range correlation, which widens the intervals of large blocks. That is arguably the
   right reaction, since bias is a block-level error that the current method ignores.
 
+## Round 3: estimated calibration (an unknown mean)
+
+### The question
+
+Class maps undercover, and worst for rare classes at large blocks. On real data with a
+stratified reference sample, our rare-class intervals were also much narrower than
+Olofsson's and PPI's. The method assumes the map is calibrated on average: standardized
+errors have mean exactly 0. A systematic miscalibration then never averages out, so the
+interval shrinks with block size while the error does not.
+
+### The change
+
+Treat the mean of the standardized error as unknown: z(s) = x(s)ᵀβ + w(s).
+
+- The correlogram is fitted by REML with the same design X.
+- β is estimated by GLS from the holdout residuals: A = (XᵀK⁻¹X)⁻¹, β̂ = A XᵀK⁻¹z.
+- The block estimate is shifted by x_Bᵀβ̂, where x_B is the block mean of σ(s)x(s).
+- The variance gains the uncertainty of β̂, minus a cross term:
+  V_B + x_BᵀA x_B − 2 x_BᵀA XᵀK⁻¹ c_B, where c_B,i is the block mean of σ(s)ρ(|s − x_i|).
+
+This is ordinary or universal kriging logic; the current method is the simple-kriging
+case. `check_unknown_mean.py` verifies the shift and variance by exact simulation on a
+small grid.
+
+| arm | design X | cross term |
+|---|---|---|
+| `ok` | 1 | yes |
+| `ok_nc` | 1 | no |
+| `ok_strata` / `ok_strata_nc` | mapped-class indicators (strata with < 5 points pooled) | yes / no |
+| `ok_logit` / `ok_logit_nc` | [σ, σ·logit p], a linearised logistic recalibration; GLS on the `ok` correlogram | yes / no |
+| `ppi` | design-based: block map mean + mean residual of points in the block (≥ 20 points) | — |
+| `olofsson` | design-based: post-stratified by mapped class | — |
+
+### Stages
+
+| stage | script | what it tests | cells × realizations |
+|---|---|---|---|
+| 1 | `round3.py` | full mapping pipelines (random-forest learner, 100 × 100 grid): workflows holdout, holdout + refit, random CV, distance-matched CV | 12 × 100 |
+| 1b | `round3_holdout.py` | a separate 100-point holdout: split from the campaign, or independent random, stratified or clustered; recalibration on training-data CV | 12 × 100 |
+| 2 | `round3_ideal.py --stage core` | the round-1/2 scenarios plus `bias`, `rare3`, `rare3_shift`, `rare3_omission`; holdout sizes 50–400 | 39 × 100–200 |
+| 3 | `round3_ideal.py --stage designs` | validation designs: stratified, clustered, roads, half, confident, informative; holdout sizes 50–400 | 48 × 100–150 |
+
+Learners in Stages 1 and 1b are covariate-only or location-aware (covariates plus x and y).
+Training samples are random, clustered or along roads. Scorecards are in
+`results/round3/{pipeline,holdout,core,designs}/scorecard.md`.
+
+### Results
+
+**Stage 1b, class maps: coverage error with global recalibration on training-data CV**
+(mean over learners and training designs; area-estimate RMSE ÷ `current` in brackets).
+
+| holdout | `current` | `ok` | `ok_nc` | `ok_logit_nc` | `ppi` | `olofsson` |
+|---|---|---|---|---|---|---|
+| split from the campaign | 0.192 | 0.099 | 0.080 | 0.074 | 0.185 | 0.249 |
+| independent random | 0.059 | 0.046 | 0.038 (1.18) | 0.043 (1.21) | 0.078 | 0.144 |
+| independent stratified | 0.104 | 0.062 | 0.036 (1.33) | 0.035 (1.32) | 0.211 | 0.221 |
+| independent clustered | 0.147 | 0.077 | 0.055 (1.47) | 0.058 (**4.04**) | 0.305 | 0.401 |
+
+**Stage 1b, continuous maps** (same layout): independent random holdout `current` 0.017,
+`ok` 0.014 (1.06), `ok_nc` 0.050; independent clustered `current` 0.072, `ok` 0.053,
+`ok_nc` 0.030.
+
+**Stage 2, class maps at 300 points: coverage error.**
+
+| scenario | `current` | `ok` | `ok_nc` | `ok_strata_nc` | `ok_logit_nc` | `oracle_ok` | `ppi` |
+|---|---|---|---|---|---|---|---|
+| baseline | 0.072 | 0.044 | 0.031 | 0.030 | 0.029 | 0.021 | 0.022 |
+| range64 | 0.047 | 0.037 | 0.037 | 0.040 | 0.035 | 0.020 | 0.018 |
+| rare3 | 0.056 | 0.037 | 0.028 | 0.027 | 0.025 | 0.021 | 0.052 |
+| rare3_shift | 0.112 | 0.071 | 0.050 | 0.041 | 0.038 | 0.045 | 0.067 |
+| rare3_omission | 0.098 | 0.069 | 0.046 | 0.038 | 0.036 | 0.052 | 0.073 |
+| temperature0.7 | 0.151 | 0.135 | 0.091 | 0.074 | 0.066 | 0.092 | 0.028 |
+
+Rare class (3 %) at 128-cell tiles, coverage (estimated SD ÷ true SD):
+
+| scenario | `current` | `ok` | `ok_nc` | `ok_strata_nc` | `ok_logit_nc` | `ppi` | `olofsson` |
+|---|---|---|---|---|---|---|---|
+| rare3 | 0.75 (1.33) | 0.85 (0.92) | 0.94 (1.43) | 0.94 (1.30) | 0.96 (1.36) | 0.85 (0.93) | 0.83 (0.69) |
+| rare3_shift | 0.34 (0.44) | 0.63 (0.30) | 0.76 (0.49) | 0.90 (0.54) | 0.90 (1.06) | 0.90 (1.03) | 0.91 (1.04) |
+| rare3_omission | 0.36 (0.51) | 0.63 (0.17) | 0.78 (0.27) | 0.89 (0.25) | 0.91 (1.17) | 0.89 (0.97) | — |
+
+**Stage 2, continuous maps at 300 points: coverage error, `current` → `ok`.** baseline
+0.012 → 0.012; bias (+0.3σ) 0.118 → 0.012; n100 0.034 → 0.019; nugget0.9 0.096 → 0.044;
+range64 0.012 → 0.005; spherical 0.009 → 0.008; sd_scale0.75 0.145 → 0.135; pipeline 0.040
+→ 0.032. `oracle_ok` (true correlogram, with the cross term) is at 0.003–0.008 wherever σ is
+right.
+
+**Holdout size (Stages 2 and 3): coverage error / area RMSE ÷ `current`.**
+
+| case | n | `current` | correction |
+|---|---|---|---|
+| continuous baseline, random (`ok`) | 50 | 0.059 | 0.057 / 1.11 |
+| | 100 | 0.024 | 0.032 / 0.99 |
+| | 200 | 0.015 | 0.023 / 0.92 |
+| | 300–400 | 0.009–0.012 | 0.009–0.012 / 0.90 |
+| class map rare3_shift, clustered (`ok_nc`) | 50 | 0.165 | 0.049 / 1.45 |
+| | 100 | 0.146 | 0.061 / 1.31 |
+| | 200 | 0.150 | 0.055 / 1.05 |
+| | 300–400 | 0.125–0.129 | 0.057–0.062 / 0.98 |
+| class map rare3_shift, stratified (`ok_nc`) | 50–100 | 0.093–0.095 | 0.024–0.032 / 1.23–1.71 |
+| | 200–400 | 0.104–0.120 | 0.049–0.052 / 0.90–0.95 |
+
+**Stage 3, calibrated rare class at 300 points: coverage error by validation design.**
+
+| design | `current` | `ok_nc` | `ok_logit_nc` | `ppi` | `olofsson` |
+|---|---|---|---|---|---|
+| clustered | 0.112 | 0.048 | 0.038 | 0.304 | 0.388 |
+| roads | 0.115 | 0.046 | 0.046 | 0.359 | 0.424 |
+| half (western half only) | 0.067 | 0.030 | 0.028 | 0.085 | 0.249 |
+| confident (∝ max p⁴) | 0.108 | 0.059 | 0.052 | 0.233 | 0.377 |
+| stratified (equal allocation) | 0.174 | 0.079 | 0.070 | 0.450 | 0.095 |
+| informative (×5 where the truth is rare) | **0.047** | 0.133 | 0.175 | 0.429 | 0.405 |
+
+For continuous maps under the four Stage-3 designs, `ok` beats `current` under clustered,
+roads and half samples (0.030 / 0.022 / 0.017 vs 0.041 / 0.035 / 0.031) and is 0.003
+worse under the confident design (0.014 vs 0.011).
+
+### Findings
+
+1. **The correction fixes the main weakness.** Class-map coverage error roughly halves in
+   every stage and design except the informative one. The rare class at large blocks goes
+   from 0.34–0.75 to 0.76–0.94 coverage with `ok_nc` (128-cell tiles, Stage 2).
+2. **The cross term is right in principle but too generous for class maps in practice.**
+   With the true correlogram (`oracle_ok`) it is calibrated in both modes. With an estimated
+   correlogram, class maps undercover with it (`ok`) and cover well without it (`ok_nc`).
+   Continuous maps are accurate with it and overcover without it.
+3. **How the holdout is collected matters more than any estimator.** A holdout split off a
+   clustered or road campaign sits next to training points, so its residuals understate the
+   map's errors; every method fails (Stage 1b, coverage error 0.07–0.25). Any independent
+   holdout, even a clustered one, removes most of that.
+4. **Recalibration fitted on training-data CV helps both modes; one parameter is enough.**
+   A σ factor or a single temperature lowers coverage error in both modes. Per-class
+   recalibration (temperature plus class biases) is no better and slightly worse for the
+   rare class, whose biases rest on about 8 training points.
+5. **The correction costs accuracy with small holdouts.** It removes bias where the map is
+   miscalibrated but adds the noise of β̂ everywhere. Area-estimate RMSE is 1.1–1.8 ×
+   `current` at 50–100 points and about break-even from 200.
+6. **`ok_logit_nc` is the best class-map arm on idealized maps but fragile on real ones.**
+   With the right mean shape it gets the rare-class SD right (1.06–1.17) where the
+   constant mean underestimates it. With clipped random-forest probabilities and a
+   clustered holdout its two design columns become nearly collinear, and the GLS breaks
+   (area RMSE 4 ×, Stage 1b). A REML refit with the logit design was also unstable (one
+   realization in 100 fitted a sill of 8.8), so the arm reuses the `ok` correlogram.
+7. **Design-based estimators need many points per block.** PPI and Olofsson are calibrated
+   at large blocks with enough random or stratified points, and fail under clustered,
+   road or opportunistic samples (coverage error 0.23–0.45).
+8. **Limits no estimator here fixes:**
+   - **Informative sampling.** When inclusion depends on the true class, the residuals
+     misrepresent the map's errors, and the correction makes coverage worse than
+     `current` (0.133 vs 0.047). The correction must not be used with such samples.
+   - **A mis-scaled σ.** A mean correction cannot fix a scale error (sd_scale0.75,
+     temperature0.7); recalibration does.
+   - **Skewed rare-class shares at mid-size blocks.** At 64-cell tiles every method,
+     the oracle included, covers the rare class 0.73–0.89, because a symmetric normal
+     interval misfits a share that is mostly near zero.
+
+### Against the round-3 hypotheses
+
+| hypothesis | outcome |
+|---|---|
+| H1: out-of-fold residuals plus a refit map are as valid as a holdout | Not in general: random CV is optimistic under clustered samples, and location-aware learners break it. Superseded by the separate-holdout assumption. |
+| H2: clustered samples need distance-matched folds | Supported: with recalibration, distance-matched CV cut continuous coverage error from 0.12 (random CV) to 0.06 (Stage 1). |
+| H3: the cross term is exact for a holdout map and must be dropped after a location-aware refit | Exact with the true correlogram; with an estimated one, class maps need it dropped even with a separate holdout. |
+| H4: one-parameter recalibration helps class maps and is safe for continuous maps | Supported when fitted on training-data CV; fitting it on the holdout itself did not help. |
+
+### Recommended workflow
+
+1. Train the map on the training data and keep the model; do not refit on the holdout.
+2. Collect the holdout **independently** of the training data, with a probability design
+   if possible (random or stratified). Clustered or opportunistic holdouts work with the
+   correction; informative ones (inclusion depending on the outcome) do not.
+3. Fit a **global** recalibration on cross-validated training predictions: σ × √mean(z²),
+   or one temperature for class probabilities.
+4. Estimate the correlogram on the holdout by REML with an unknown constant mean, and
+   apply the correction:
+   - **continuous maps:** `ok`, with the cross term;
+   - **class maps:** `ok_nc`, without the cross term.
+5. **Size rule:** use the correction with a holdout of **at least about 200 points**, or
+   when the map is evidently miscalibrated (for example a clear offset between predicted
+   and observed class shares). With fewer points and a calibrated map, `current` is more
+   accurate.
+
 ## Reproducing
 
 ```bash
@@ -226,3 +411,19 @@ Run times on 4 cores:
   categorical scenario alone takes 34 min, mostly for the likelihood fits.
 
 `--quick` runs 4 realizations as a smoke test.
+
+Round 3:
+
+```bash
+uv run python -m experiments.improvements.check_unknown_mean
+uv run --group experiments python -m experiments.improvements.round3 --stage pipeline
+uv run --group experiments python -m experiments.improvements.round3_holdout --stage
+uv run --group experiments python -m experiments.improvements.round3_ideal --stage core
+uv run --group experiments python -m experiments.improvements.round3_ideal --stage designs
+uv run python -m experiments.improvements.round3 --summarize pipeline
+uv run python -m experiments.improvements.round3_holdout --summarize
+uv run python -m experiments.improvements.round3_ideal --summarize core   # and designs
+```
+
+`--skip-existing` resumes a stage after an interruption. On 4 cores: Stage 1 about 3.5 h,
+Stage 1b about 2 h, Stage 2 about 4 h, Stage 3 about 2.5 h.
