@@ -8,6 +8,9 @@
   Monte Carlo integral up to its error and the cell discretisation);
 * the vectorized PPI and Olofsson estimators equal ``candidates.ppi_blocks`` and
   ``candidates.olofsson_blocks`` wherever the latter are defined;
+* the exact class-map oracle (``round4.exact_class_variance``) equals the scenario's exact
+  block SD (``LatentClassScenario.exact_block_sd``) where it uses all cell pairs, and is
+  within Monte Carlo error of it elsewhere;
 * holdout samples are distinct cells, nested, and clusters stay within their radius.
 
 Usage::
@@ -161,6 +164,16 @@ def main() -> None:
     assert spread <= 2 * r4.CLUSTER_RADIUS, "cluster wider than its diameter"
     print(f"samples: distinct, nested; largest within-cluster distance {spread:.1f} cells")
     assert r4.landscape_groups() == r4.make_blocks(r4.N_SIDE, r4.SIDES, r4.N_SMALL).groups
+
+    # exact class-map oracle: a 4-cell and a 16-cell tile (all pairs), and the domain (MC)
+    ls = r4.landscape("categorical", N, SIDES)
+    v, se = r4.exact_class_variance(ls, 2, np.random.default_rng(0))
+    for b in (5, 256 + 3):
+        ref = ls["sc"].exact_block_sd(2, ls["blocks"].resolved[b].cells) ** 2
+        close(f"exact oracle variance, block {b} (all pairs)", v[b], ref, 1e-8)
+    ref = ls["sc"].exact_block_sd(2, ls["blocks"].resolved[-1].cells) ** 2
+    print(f"exact oracle variance, domain: {(v[-1] - ref) / se[-1]:+.2f} Monte Carlo SEs off")
+    assert abs(v[-1] - ref) < 4 * se[-1], "exact oracle variance, domain"
     print("all round-4 checks passed")
 
 
