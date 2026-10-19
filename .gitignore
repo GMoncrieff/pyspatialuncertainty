@@ -33,4 +33,5 @@ Rplots.pdf
 
 # Experiments scratch
 experiments/results/_scratch/
+experiments/improvements/results/**/*_quick*
 docs/report.html
