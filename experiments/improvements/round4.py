@@ -28,10 +28,9 @@ covariance, see `oracle_pass`, with the domain-averaged correlogram as ``oracle_
 ``oracle_ok`` (true correlogram, the map's σ, unknown mean, with cross term; for class
 maps the domain-averaged correlogram), ``olofsson`` (class maps: post-stratified by
 mapped class per block; strata with fewer than 2 points are merged into the block's
-largest stratum) and ``ppi``
-(continuous maps: mean residual of the points in the block). The design-based arms need
-20 points in a block. Correlograms are fitted on a random subsample of at most 500 holdout
-points, as the package advises for large n.
+largest stratum) and ``ppi`` (continuous maps: mean residual of the points in the
+block). The design-based arms need 20 points in a block. Correlograms are fitted on a
+random subsample of at most 500 holdout points, as the package advises for large n.
 
 Scaling: the cross term's c_B,i (block mean of σ(s)ρ(|s − x_i|)) enters only through
 Σ_i G_i c_B,i, the block mean of σ(s)·v(s) with v(s) = Σ_i G_i ρ(|s − x_i|). v is one
