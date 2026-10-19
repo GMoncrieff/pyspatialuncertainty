@@ -47,6 +47,7 @@ Usage::
     uv run --group experiments python -m experiments.improvements.round4 --quick
     uv run --group experiments python -m experiments.improvements.round4 --skip-existing \\
         --max-chunks 3
+    uv run --group experiments python -m experiments.improvements.round4 --oracle-pass
     uv run python -m experiments.improvements.round4 --summarize
 """
 
@@ -76,6 +77,7 @@ from pyspatialuncertainty.blocks import Block
 from pyspatialuncertainty.synthetic import ErrorModelScenario, LatentClassScenario, SubGridLayout
 from pyspatialuncertainty.synthetic.categorical import interval_probability
 from pyspatialuncertainty.synthetic.grf import CirculantEmbedding
+from pyspatialuncertainty.synthetic.truth import bvn_rectangle
 
 RESULTS4 = Path(__file__).resolve().parent / "results" / "round4"
 SEED4 = 20261019
@@ -92,6 +94,7 @@ CLUSTER_SIZE = 10
 CLUSTER_RADIUS = 16.0
 N_FIT = 500  # correlogram fits use at most this many holdout points
 N_MC = 10_000
+N_EXACT = 200_000  # exact class-map oracle: cell pairs per block (all, if fewer)
 N_MIN = 20  # design-based arms: points needed in a block
 N_WORKERS = 4
 MODES = ("continuous", "categorical")
@@ -722,13 +725,157 @@ def landscape_groups() -> tuple[str, ...]:
 
 
 # ---------------------------------------------------------------------------
+# Exact oracle for class maps (post hoc)
+# ---------------------------------------------------------------------------
+
+
+def arm_stats(resid: np.ndarray, sd: np.ndarray) -> np.ndarray:
+    """The per-block sums of `STATS` for one realization (as in `worker`)."""
+    valid = np.isfinite(resid) & np.isfinite(sd)
+    r0 = np.where(valid, resid, 0.0)
+    s0 = np.where(valid, sd, 1.0)
+    logsd = np.where(valid, np.log(np.maximum(s0, 1e-12)), 0.0)
+    return np.stack(
+        [
+            valid,
+            valid & (np.abs(r0) <= Z * s0),
+            r0,
+            r0**2,
+            np.where(valid, sd, 0.0) ** 2,
+            logsd,
+            logsd**2,
+        ]
+    ).astype(np.float64)
+
+
+def exact_class_variance(
+    ls: dict[str, Any], j: int, rng: np.random.Generator
+) -> tuple[np.ndarray, np.ndarray]:
+    """Variance of the true block fraction of class j, (1/|B|²) Σ_s Σ_u Cov(f_s, f_u), from the
+    exact (non-stationary) bivariate-normal covariances of the thresholded latent field.
+
+    All cell pairs for blocks with at most `N_EXACT` of them, else `N_EXACT` random pairs
+    (10 × `N_EXACT` beyond 64 × 64 cells); returns the variances and their Monte Carlo SEs.
+    """
+    sc = ls["sc"]
+    lim = sc.limits
+    mu = ls["mu"]
+    p = sc.p_true.reshape(len(CLASSES), -1)[j]
+    n = ls["blocks"].n
+    var, se = [], []
+    for blk in ls["blocks"].resolved:
+        c = blk.cells
+        if c.size**2 <= N_EXACT:
+            pairs = [tuple(a.ravel() for a in np.meshgrid(c, c, indexing="ij"))]
+        else:  # 10 times the pairs for blocks beyond 64 × 64 cells
+            pairs = [
+                (c[rng.integers(0, c.size, N_EXACT)], c[rng.integers(0, c.size, N_EXACT)])
+                for _ in range(1 if c.size <= 64 * 64 else 10)
+            ]
+        cov = []
+        for ci, cj in pairs:
+            (ri, qi), (rj, qj) = np.divmod(ci, n), np.divmod(cj, n)
+            r = sc.latent_correlation(np.hypot(ri - rj, qi - qj))  # 1 − nugget for the same cell
+            cov.append(
+                bvn_rectangle(
+                    lim[j] - mu[ci], lim[j + 1] - mu[ci], lim[j] - mu[cj], lim[j + 1] - mu[cj], r
+                )
+                - p[ci] * p[cj]
+            )
+        g = np.concatenate(cov)
+        var.append(float(g.mean()))
+        se.append(0.0 if c.size**2 <= N_EXACT else float(g.std() / math.sqrt(g.size)))
+    return np.array(var), np.array(se)
+
+
+def oracle_pass(n_real: int) -> None:
+    """The exact oracle for class maps: the map's own block error (truth − map block mean,
+    the error of ``current``) with the exact true SD (`exact_class_variance`).
+
+    The truths are regenerated from the runner's seeds, so this needs no rerun. Rows go to
+    ``categorical_oracle.parquet`` as arm ``oracle`` (repeated for every design and size);
+    the runner's stationary oracle (domain-averaged correlogram) is reported as
+    ``oracle_avg``. The variances go to ``categorical_oracle_variance.parquet``.
+    """
+    t0 = time.time()
+    mode = "categorical"
+    ls = landscape(mode)
+    blocks: Blocks = ls["blocks"]
+    rng = np.random.default_rng([SEED4, 99])
+    var = [exact_class_variance(ls, j, rng) for j in range(len(CLASSES))]
+    sd = np.sqrt(np.maximum(np.stack([v for v, _ in var]), 0.0))
+    lim = ls["sc"].limits
+    sd_n = math.sqrt(ls["nugget"])
+    acc: dict[tuple[str, str], np.ndarray] = {}
+    for r in range(n_real):
+        # the first draw of realization r in `realization`
+        rng_r = np.random.default_rng([SEED4, MODES.index(mode), r])
+        y_struct = ls["mu"] + ls["sampler"].sample(rng_r, 1)[0].ravel()
+        for j, cls in enumerate(CLASSES):
+            frac = interval_probability((lim[j] - y_struct) / sd_n, (lim[j + 1] - y_struct) / sd_n)
+            truth = np.asarray(blocks.bmat @ frac)
+            for c in CALS:
+                st = arm_stats(truth - ls["pred"][c][j], sd[j])
+                acc[(c, cls)] = acc[(c, cls)] + st if (c, cls) in acc else st
+    nb = len(blocks.groups)
+    frames = [
+        pl.DataFrame(
+            {
+                "group": list(blocks.groups),
+                "block": np.arange(nb, dtype=np.int32),
+                "n_real": np.full(nb, n_real, dtype=np.int16),
+                **{
+                    name: st[i].astype(np.int16 if i < 2 else np.float32)
+                    for i, name in enumerate(STATS)
+                },
+            }
+        ).with_columns(
+            pl.lit(mode).alias("mode"),
+            pl.lit(c).alias("calibration"),
+            pl.lit(design).alias("design"),
+            pl.lit(n).alias("n"),
+            pl.lit("oracle").alias("arm"),
+            pl.lit(cls).alias("class"),
+        )
+        for (c, cls), st in acc.items()
+        for design in DESIGNS
+        for n in SIZES
+    ]
+    pl.concat(frames).select([*KEYS, "group", "block", "n_real", *STATS]).write_parquet(
+        RESULTS4 / "categorical_oracle.parquet", compression="zstd"
+    )
+    pl.concat(
+        pl.DataFrame(
+            {
+                "class": cls,
+                "block": np.arange(nb, dtype=np.int32),
+                "group": list(blocks.groups),
+                "v_exact": var[j][0],
+                "v_exact_se": var[j][1],
+                "v_avg": ls["v_true"][j],
+            }
+        )
+        for j, cls in enumerate(CLASSES)
+    ).write_parquet(RESULTS4 / "categorical_oracle_variance.parquet", compression="zstd")
+    print(f"[round4] exact class-map oracle, {n_real} realizations: {time.time() - t0:.0f} s")
+
+
+# ---------------------------------------------------------------------------
 # Summary
 # ---------------------------------------------------------------------------
 
 
 def load(suffix: str = "") -> pl.DataFrame:
+    """Chunk files; with the exact class-map oracle present, the runner's class-map
+    ``oracle`` (domain-averaged correlogram) becomes ``oracle_avg``."""
     files = sorted(f for m in MODES for f in RESULTS4.glob(f"{m}_r???_???{suffix}.parquet"))
-    return pl.concat([pl.read_parquet(f) for f in files])
+    raw = pl.concat([pl.read_parquet(f) for f in files])
+    exact = RESULTS4 / f"categorical_oracle{suffix}.parquet"
+    if not exact.exists():
+        return raw
+    avg = (pl.col("mode") == "categorical") & (pl.col("arm") == "oracle")
+    raw = raw.with_columns(pl.when(avg).then(pl.lit("oracle_avg")).otherwise("arm").alias("arm"))
+    return pl.concat([raw, pl.read_parquet(exact)])
 
 
 def block_metrics(raw: pl.DataFrame) -> pl.DataFrame:
@@ -781,7 +928,7 @@ def group_metrics(blk: pl.DataFrame) -> pl.DataFrame:
 
 ARM_ORDER = {
     "continuous": ("current", "ok", "ok_exact", "ppi", "oracle", "oracle_ok"),
-    "categorical": ("current", "ok_nc", "olofsson", "oracle", "oracle_ok"),
+    "categorical": ("current", "ok_nc", "olofsson", "oracle", "oracle_avg", "oracle_ok"),
 }
 
 
@@ -844,10 +991,14 @@ def main() -> None:
     ap.add_argument("--quick", action="store_true", help="2 realizations, *_quick files")
     ap.add_argument("--skip-existing", action="store_true")
     ap.add_argument("--summarize", action="store_true")
+    ap.add_argument("--oracle-pass", action="store_true", help="exact class-map oracle")
     args = ap.parse_args()
     for var in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "POLARS_MAX_THREADS"):
         os.environ.setdefault(var, "1")
     suffix = "_quick" if args.quick else ""
+    if args.oracle_pass:
+        oracle_pass(args.realizations)
+        return
     if args.summarize:
         summarize(suffix)
         return
