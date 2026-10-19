@@ -44,7 +44,8 @@ within a realization. Per-block sums over realizations go to
 Usage::
 
     uv run --group experiments python -m experiments.improvements.round4 --quick
-    uv run --group experiments python -m experiments.improvements.round4 --skip-existing
+    uv run --group experiments python -m experiments.improvements.round4 --skip-existing \\
+        --max-chunks 3
     uv run python -m experiments.improvements.round4 --summarize
 """
 
@@ -815,7 +816,8 @@ def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--mode", choices=MODES, action="append")
     ap.add_argument("--realizations", type=int, default=100)
-    ap.add_argument("--chunk", type=int, default=25)
+    ap.add_argument("--chunk", type=int, default=20)
+    ap.add_argument("--max-chunks", type=int, default=None, help="stop after this many chunks")
     ap.add_argument("--workers", type=int, default=N_WORKERS)
     ap.add_argument("--quick", action="store_true", help="2 realizations, *_quick files")
     ap.add_argument("--skip-existing", action="store_true")
@@ -829,12 +831,16 @@ def main() -> None:
         return
     RESULTS4.mkdir(parents=True, exist_ok=True)
     n_real, size = (2, 2) if args.quick else (args.realizations, args.chunk)
+    done = 0
     for mode in args.mode or MODES:
         for start, stop in chunks(n_real, size):
             stem = RESULTS4 / f"{mode}_r{start:03d}_{stop:03d}{suffix}.parquet"
             if args.skip_existing and stem.exists():
                 continue
+            if args.max_chunks is not None and done >= args.max_chunks:
+                return
             run_chunk(mode, start, stop, suffix, args.workers)
+            done += 1
 
 
 if __name__ == "__main__":
