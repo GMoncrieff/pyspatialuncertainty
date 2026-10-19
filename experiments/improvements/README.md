@@ -15,6 +15,8 @@ implementation (`fit_likelihood`) gives the same fits as `candidates.likelihood_
 
 Round 3 tests an estimated calibration (an unknown mean) for a separate holdout sample; see
 [Round 3](#round-3-estimated-calibration-an-unknown-mean). Its adoption is pending.
+[Round 4](#round-4-the-corrections-at-landscape-scale) retests the chosen corrections on a
+1024 × 1024 landscape with holdouts of up to 5000 points.
 
 ## How the variants are judged
 
