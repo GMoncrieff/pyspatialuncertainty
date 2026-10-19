@@ -21,7 +21,8 @@ and the design-based estimators:
 
 Arms: ``current`` (the package: zero-mean ML correlogram, Monte Carlo block variance,
 known mean), ``ok`` / ``ok_nc`` (REML correlogram, GLS estimate of a constant mean of the
-standardized errors from all holdout points, corrected block estimate), ``oracle`` (true σ
+standardized errors from all holdout points, corrected block estimate; ``ok_exact`` is
+``ok`` with V_B as exact cell sums instead of Monte Carlo), ``oracle`` (true σ
 and correlogram, zero mean), ``oracle_ok`` (true correlogram, the map's σ, unknown mean,
 with cross term), ``olofsson`` (class maps: post-stratified by mapped class per block;
 strata with fewer than 2 points are merged into the block's largest stratum) and ``ppi``
@@ -571,13 +572,33 @@ def realization(
                         if m1 is not None
                         else None
                     )
+                    extra: dict[str, float] = {}
                     if mode == "continuous":
+                        # the whole landscape is the last block: its corrected variance is a
+                        # small difference of V_B and the cross term once n is large
+                        extra = dict.fromkeys(
+                            ("v_mc_domain", "v_exact_domain", "added_domain"), math.nan
+                        )
                         if g1 is not None:
-                            k1 = Kernel(n_side, lambda d, m1=m1: cand.structured_correlation(m1, d))
+
+                            def fn1(d: np.ndarray, m1: Any = m1) -> np.ndarray:
+                                return cand.structured_correlation(m1, d)
+
+                            k1 = Kernel(n_side, fn1)
                             cross = np.asarray(bmat @ (sd_c * cross_field(k1, cells, g1.G)))
                             arms["ok"] = corrected(x_b, var[(j, "m1")], g1, z, cross)
+                            # the same correction with V_B as exact cell sums (no Monte Carlo)
+                            v_exact = exact_block_variance(blocks, sd_c, fn1)
+                            arms["ok_exact"] = corrected(x_b, v_exact, g1, z, cross)
+                            extra = {
+                                "v_mc_domain": float(var[(j, "m1")][-1]),
+                                "v_exact_domain": float(v_exact[-1]),
+                                "added_domain": float(
+                                    x_b[-1] ** 2 * g1.A - 2 * x_b[-1] * cross[-1]
+                                ),
+                            }
                         else:
-                            arms["ok"] = nan
+                            arms["ok"] = arms["ok_exact"] = nan
                         arms["ppi"] = ppi(nb, blk, resid[c][pts])
                     else:
                         arms["ok_nc"] = (
@@ -613,6 +634,7 @@ def realization(
                             "se_beta_ok": math.sqrt(g1.A) if g1 is not None else math.nan,
                             "beta_oracle": float(go.G @ z) if go is not None else math.nan,
                             "se_beta_oracle": math.sqrt(go.A) if go is not None else math.nan,
+                            **extra,
                         }
                     )
     return out, diag
@@ -758,7 +780,7 @@ def group_metrics(blk: pl.DataFrame) -> pl.DataFrame:
 
 
 ARM_ORDER = {
-    "continuous": ("current", "ok", "ppi", "oracle", "oracle_ok"),
+    "continuous": ("current", "ok", "ok_exact", "ppi", "oracle", "oracle_ok"),
     "categorical": ("current", "ok_nc", "olofsson", "oracle", "oracle_ok"),
 }
 
