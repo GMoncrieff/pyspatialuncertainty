@@ -647,34 +647,65 @@ def realization(
     return out, diag
 
 
+def arm_stats(resid: np.ndarray, sd: np.ndarray) -> np.ndarray:
+    """The per-block sums of `STATS` for one realization of an arm."""
+    valid = np.isfinite(resid) & np.isfinite(sd)
+    r0 = np.where(valid, resid, 0.0)
+    s0 = np.where(valid, sd, 1.0)
+    logsd = np.where(valid, np.log(np.maximum(s0, 1e-12)), 0.0)
+    return np.stack(
+        [
+            valid,
+            valid & (np.abs(r0) <= Z * s0),
+            r0,
+            r0**2,
+            np.where(valid, sd, 0.0) ** 2,
+            logsd,
+            logsd**2,
+        ]
+    ).astype(np.float64)
+
+
 def worker(task: dict[str, Any]) -> dict[str, Any]:
     for var in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS"):
         os.environ.setdefault(var, "1")
     t0 = time.time()
     res, diag = realization(task["mode"], task["r"])
-    stats = {}
-    for key, (resid, sd) in res.items():
-        valid = np.isfinite(resid) & np.isfinite(sd)
-        r0 = np.where(valid, resid, 0.0)
-        s0 = np.where(valid, sd, 1.0)
-        logsd = np.log(np.maximum(s0, 1e-12))
-        stats[key] = np.stack(
-            [
-                valid,
-                valid & (np.abs(r0) <= Z * s0),
-                r0,
-                r0**2,
-                np.where(valid, sd, 0.0) ** 2,
-                np.where(valid, logsd, 0.0),
-                np.where(valid, logsd, 0.0) ** 2,
-            ]
-        ).astype(np.float64)
+    stats = {key: arm_stats(resid, sd) for key, (resid, sd) in res.items()}
     return {"stats": stats, "diag": diag, "seconds": time.time() - t0}
 
 
 # ---------------------------------------------------------------------------
 # Runner
 # ---------------------------------------------------------------------------
+
+
+def stats_frame(acc: dict[tuple[str, ...], np.ndarray], mode: str, n_real: int) -> pl.DataFrame:
+    """Rows of per-block sums for {(calibration, design, n, arm, class): sums}."""
+    groups = landscape_groups()
+    nb = len(groups)
+    frames = [
+        pl.DataFrame(
+            {
+                "group": groups,
+                "block": np.arange(nb, dtype=np.int32),
+                "n_real": np.full(nb, n_real, dtype=np.int16),
+                **{
+                    name: st[i].astype(np.int16 if i < 2 else np.float32)
+                    for i, name in enumerate(STATS)
+                },
+            }
+        ).with_columns(
+            pl.lit(mode).alias("mode"),
+            pl.lit(cal).alias("calibration"),
+            pl.lit(design).alias("design"),
+            pl.lit(int(n)).alias("n"),
+            pl.lit(arm).alias("arm"),
+            pl.lit(cls).alias("class"),
+        )
+        for (cal, design, n, arm, cls), st in acc.items()
+    ]
+    return pl.concat(frames).select([*KEYS, "group", "block", "n_real", *STATS])
 
 
 def run_chunk(mode: str, start: int, stop: int, suffix: str, n_workers: int) -> None:
@@ -684,32 +715,8 @@ def run_chunk(mode: str, start: int, stop: int, suffix: str, n_workers: int) -> 
     for o in out:
         for key, st in o["stats"].items():
             acc[key] = acc[key] + st if key in acc else st.copy()
-    groups = landscape_groups()
-    nb = len(groups)
-    frames = []
-    for (cal, design, n, arm, cls), st in acc.items():
-        frames.append(
-            pl.DataFrame(
-                {
-                    "group": groups,
-                    "block": np.arange(nb, dtype=np.int32),
-                    "n_real": np.full(nb, stop - start, dtype=np.int16),
-                    **{
-                        name: st[i].astype(np.int16 if i < 2 else np.float32)
-                        for i, name in enumerate(STATS)
-                    },
-                }
-            ).with_columns(
-                pl.lit(mode).alias("mode"),
-                pl.lit(cal).alias("calibration"),
-                pl.lit(design).alias("design"),
-                pl.lit(int(n)).alias("n"),
-                pl.lit(arm).alias("arm"),
-                pl.lit(cls).alias("class"),
-            )
-        )
     stem = RESULTS4 / f"{mode}_r{start:03d}_{stop:03d}"
-    pl.concat(frames).select([*KEYS, "group", "block", "n_real", *STATS]).write_parquet(
+    stats_frame(acc, mode, stop - start).write_parquet(
         f"{stem}{suffix}.parquet", compression="zstd"
     )
     pl.DataFrame([row | {"mode": mode} for o in out for row in o["diag"]]).write_parquet(
@@ -731,25 +738,6 @@ def landscape_groups() -> tuple[str, ...]:
 # ---------------------------------------------------------------------------
 # Exact oracle for class maps (post hoc)
 # ---------------------------------------------------------------------------
-
-
-def arm_stats(resid: np.ndarray, sd: np.ndarray) -> np.ndarray:
-    """The per-block sums of `STATS` for one realization (as in `worker`)."""
-    valid = np.isfinite(resid) & np.isfinite(sd)
-    r0 = np.where(valid, resid, 0.0)
-    s0 = np.where(valid, sd, 1.0)
-    logsd = np.where(valid, np.log(np.maximum(s0, 1e-12)), 0.0)
-    return np.stack(
-        [
-            valid,
-            valid & (np.abs(r0) <= Z * s0),
-            r0,
-            r0**2,
-            np.where(valid, sd, 0.0) ** 2,
-            logsd,
-            logsd**2,
-        ]
-    ).astype(np.float64)
 
 
 def exact_class_variance(
@@ -821,33 +809,16 @@ def oracle_pass(n_real: int) -> None:
             for c in CALS:
                 st = arm_stats(truth - ls["pred"][c][j], sd[j])
                 acc[(c, cls)] = acc[(c, cls)] + st if (c, cls) in acc else st
-    nb = len(blocks.groups)
-    frames = [
-        pl.DataFrame(
-            {
-                "group": list(blocks.groups),
-                "block": np.arange(nb, dtype=np.int32),
-                "n_real": np.full(nb, n_real, dtype=np.int16),
-                **{
-                    name: st[i].astype(np.int16 if i < 2 else np.float32)
-                    for i, name in enumerate(STATS)
-                },
-            }
-        ).with_columns(
-            pl.lit(mode).alias("mode"),
-            pl.lit(c).alias("calibration"),
-            pl.lit(design).alias("design"),
-            pl.lit(n).alias("n"),
-            pl.lit("oracle").alias("arm"),
-            pl.lit(cls).alias("class"),
-        )
+    rows = {
+        (c, design, str(n), "oracle", cls): st
         for (c, cls), st in acc.items()
         for design in DESIGNS
         for n in SIZES
-    ]
-    pl.concat(frames).select([*KEYS, "group", "block", "n_real", *STATS]).write_parquet(
+    }
+    stats_frame(rows, mode, n_real).write_parquet(
         RESULTS4 / "categorical_oracle.parquet", compression="zstd"
     )
+    nb = len(blocks.groups)
     pl.concat(
         pl.DataFrame(
             {
