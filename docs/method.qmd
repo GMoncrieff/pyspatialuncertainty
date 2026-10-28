@@ -12,23 +12,67 @@ package.
 | 1 | Quantify the point-support prediction uncertainty, e.g. with a quantile regression forest or conformal prediction | your model |
 | 2 | Compute the prediction-error SD σ(s) at prediction and validation locations | `sd_from_samples`, `sd_from_quantiles` |
 | 3 | Standardize the validation errors: (observed − predicted) / σ, using cross-validated or independent predictions | `standardized_errors` |
-| 4 | Model the correlation of the standardized errors and convert the fitted variogram model to a correlation function, ρ(h) = (sill − γ(h)) / sill | `fit_correlation` (likelihood by default; `method="wls"` for the paper's variogram fit), `empirical_variogram`, `fit_variogram`, `vgm` |
+| 4 | Model the correlation of the standardized errors and convert the fitted variogram model to a correlation function, ρ(h) = (sill − γ(h)) / sill | `fit_correlation` (REML likelihood by default; `method="wls"` for the paper's variogram fit), `empirical_variogram`, `fit_variogram`, `vgm` |
 | 5–6 | Estimate $\frac{1}{|B|^2}\iint_B \sigma(s)\sigma(u)\rho(|s-u|)\,ds\,du$ as the mean of σ(S)σ(U)ρ(\|S − U\|) over *m* pairs of uniform points | `aggregate_continuous`, `mc_block_variance` |
 | 7 | Variance of the block total = \|B\|² × variance of the block average | `aggregate_continuous` |
 | 8 | Report SDs and normal prediction intervals (central limit theorem) | `aggregate_continuous`, `normal_interval` |
+
+By default the package adds one step to the paper's eight: the mean of the standardized
+errors is estimated and the block predictions and variances are corrected for it (next
+section). `mean="zero"` with `method="wls"` is the paper's procedure.
+
+### The default: an estimated mean
+
+The paper assumes standardized errors with mean zero: an unbiased map, or calibrated
+probabilities. A systematic offset is shared by every pixel, so it does not average out,
+and under that assumption the interval of a large block shrinks while its error does
+not. The package therefore models the standardized errors as
+$z(s) = \mu + w(s)$, with $w$ a zero-mean field with correlogram $\rho$ and $\mu$
+unknown, as ordinary kriging does:
+
+- **Fit.** The correlogram is fitted by REML (`fit_correlation(..., mean="constant")`,
+  the default), so that the offset is not counted as long-range correlation.
+- **Estimate.** With $K$ the correlation matrix of the $n$ validation points (nugget on
+  the diagonal), $\hat\mu = G z$ with $G = A\,\mathbf{1}^\top K^{-1}$ and
+  $A = (\mathbf{1}^\top K^{-1}\mathbf{1})^{-1}$, the variance of $\hat\mu$
+  (`estimate_mean`).
+- **Shift.** The block prediction becomes the map's block mean plus
+  $x_B\hat\mu$, where $x_B$ is the block mean of $\sigma$.
+- **Variance.** The error variance of the corrected block mean is
+  $V_B + x_B^2 A - 2\,x_B c_B$, where $V_B$ is the Monte Carlo integral of steps 5–6 and
+  $c_B = \sum_i G_i \cdot \overline{\sigma(s)\rho(|s - x_i|)}^{\,B}$ is the covariance
+  between the block error and $\hat\mu$ (the cross term). $x_B$ and $c_B$ are computed
+  over the block's cells.
+
+The same correction applies per class to class probability maps. A test in the suite
+checks the variance formula against an exact simulation. In simulation studies with
+known truth (`experiments/improvements/` in the repository), it kept continuous intervals
+calibrated with or without a systematic bias and removed most of the undercoverage that
+miscalibrated class probabilities cause. Points to keep in mind:
+
+- The validation points must be independent of the map's training data, ideally a
+  probability sample. With fewer than about 200 points (or a handful of clusters) on a
+  calibrated map, the estimate of $\mu$ adds more noise than it removes.
+- With thousands of points the corrected variance of a large block can be a small part of
+  $V_B$, so the Monte Carlo error of $V_B$ matters: raise `n_mc` (the functions warn).
+- A σ that is wrong by a constant factor is not fixed by a mean correction; recalibrate
+  σ (or the probability temperature) first.
+- With few points, REML can fit a weak correlation with a range of the order of the
+  whole domain. It is nearly confounded with the mean, so the interval becomes very wide.
 
 ### Conventions
 
 - **Step 4 uses a likelihood fit by default.** `fit_correlation` fits a nugget plus an
   exponential, spherical or Gaussian structure to the standardized errors by Gaussian
-  maximum likelihood, with their mean fixed at zero, as unbiased predictions and
-  calibrated probabilities imply. A common offset of the validation errors then counts as
-  evidence of long-range correlation, the part of the error that dominates large blocks.
-  The paper fits a sample variogram by weighted least squares instead. That is
-  `method="wls"`, which reproduces the authors' R script. In simulations with known truth
-  (`experiments/improvements/` in the repository), the likelihood fit gave better
-  calibrated block intervals and about half the error in block SDs. Its cost grows as n³
-  in the number of validation points n; it warns above 2,000 points.
+  restricted maximum likelihood (REML), with an unknown mean that the aggregation step
+  estimates. `mean="zero"` fixes the mean at zero (ML); a common offset of the validation
+  errors then counts as evidence of long-range correlation. The paper fits a sample
+  variogram by weighted least squares instead. That is `method="wls"`, which, with
+  `mean="zero"` in `aggregate_continuous`, reproduces the authors' R script. In
+  simulations with known truth (`experiments/improvements/` in the repository), the
+  likelihood fits gave better calibrated block intervals and about half the error in
+  block SDs. Their cost grows as n³ in the number of validation points n; they warn
+  above 2,000 points.
 - **Variograms follow gstat.** The defaults are a cutoff of 0.33333 × the bounding-box
   diagonal and a lag width of cutoff/15. Lag classes are upper-inclusive. The models
   (`Nug`, `Exp`, `Sph`, `Gau`, `Mat`, `Ste`) use gstat's parameterisation of the range.
@@ -60,14 +104,16 @@ where the true class is *k*. This mode keeps the continuous method as unchanged 
 possible:
 
 - **Error and SD.** The prediction error is $e_k = I_k - p_k$. Calibration gives it mean
-  zero and $\sigma_k = \sqrt{p_k(1-p_k)}$.
+  zero and $\sigma_k = \sqrt{p_k(1-p_k)}$. By default the mean is estimated rather than
+  assumed, as for continuous maps.
 - **Correlogram.** The standardized errors $e_k/\sigma_k$ are computed at validation
   locations using out-of-sample probabilities. One correlogram $\rho_k$ is fitted per
-  class (`fit_class_variograms`, by default with the zero-mean likelihood fit).
+  class (`fit_class_variograms`, by default with the REML likelihood fit).
 - **Integral.** The variance of the error of the block fraction of class *k* is the same
   Monte Carlo integral with $\sigma_k$ and $\rho_k$. All classes share the same point
   pairs.
-- **Predictions.** The expected fraction is the block mean of $p_k$, and the expected
+- **Predictions.** The expected fraction is the block mean of $p_k$ plus the shift
+  $x_B\hat\mu_k$ of the estimated mean (zero with `mean="zero"`), and the expected
   class area is $|B|$ times that. Normal prediction intervals are clipped to [0, 1] or
   [0, |B|].
 

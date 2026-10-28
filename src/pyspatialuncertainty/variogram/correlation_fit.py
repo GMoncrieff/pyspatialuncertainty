@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Literal
 
+import numpy as np
 import polars as pl
 from numpy.typing import ArrayLike
 
+from pyspatialuncertainty._types import FloatArray
 from pyspatialuncertainty.correlation import VariogramCorrelation
 from pyspatialuncertainty.variogram.empirical import (
     EmpiricalVariogram,
@@ -21,7 +23,12 @@ from pyspatialuncertainty.variogram.fit import (
     fit_variogram,
     fit_variogram_auto,
 )
-from pyspatialuncertainty.variogram.likelihood import LikelihoodFit, MeanModel, fit_likelihood
+from pyspatialuncertainty.variogram.likelihood import (
+    LikelihoodFit,
+    MeanModel,
+    _column,
+    fit_likelihood,
+)
 from pyspatialuncertainty.variogram.models import ModelType, VariogramModel
 
 CorrelationMethod = Literal["likelihood", "wls"]
@@ -44,12 +51,19 @@ class CorrelationFit:
         so that the fit can be checked visually.
     details
         The underlying `LikelihoodFit` or `VariogramFit`.
+    x, y, z
+        Coordinates and standardized errors of the validation points used for the fit
+        (rows with missing values removed). `aggregate_continuous` uses them to estimate
+        the mean of the errors.
     """
 
     model: VariogramModel
     method: CorrelationMethod
     empirical: EmpiricalVariogram
     details: LikelihoodFit | VariogramFit
+    x: FloatArray | None = field(default=None, repr=False)
+    y: FloatArray | None = field(default=None, repr=False)
+    z: FloatArray | None = field(default=None, repr=False)
 
     @property
     def correlation(self) -> VariogramCorrelation:
@@ -64,7 +78,7 @@ def fit_correlation(
     y: str | ArrayLike = "y",
     *,
     method: CorrelationMethod = "likelihood",
-    mean: MeanModel = "zero",
+    mean: MeanModel = "constant",
     models: Sequence[ModelType] = ("Exp", "Sph", "Gau"),
     model: VariogramModel | None = None,
     fit_method: FitMethod = 7,
@@ -77,14 +91,16 @@ def fit_correlation(
     Two methods are available.
 
     * ``"likelihood"`` (default): a Gaussian likelihood fit of a nugget plus an
-      exponential, spherical or Gaussian structure (`fit_likelihood`). The mean of the
-      errors is fixed at zero unless ``mean="constant"``. In simulations with known truth
-      it gave better-calibrated block intervals than the WLS fit, most of all for large
-      blocks.
+      exponential, spherical or Gaussian structure (`fit_likelihood`). By default the
+      mean of the errors is treated as unknown (REML, ``mean="constant"``), which goes
+      with the estimated-mean correction that `aggregate_continuous` and
+      `aggregate_categorical` apply by default. ``mean="zero"`` (ML with the mean fixed
+      at zero) goes with ``mean="zero"`` there.
     * ``"wls"``: the procedure of the paper and the authors' R script. A gstat-style
       sample variogram is fitted by weighted least squares, either automatically among
       nugget + Exp/Sph/Gau (`fit_variogram_auto`) or from the starting ``model``
-      (`fit_variogram`).
+      (`fit_variogram`). Together with ``mean="zero"`` in `aggregate_continuous` this
+      reproduces Wadoux & Heuvelink (2023).
 
     Parameters
     ----------
@@ -96,7 +112,8 @@ def fit_correlation(
     method
         ``"likelihood"`` or ``"wls"``.
     mean
-        Likelihood only: ``"zero"`` (ML) or ``"constant"`` (REML).
+        Likelihood only: ``"constant"`` (REML with an unknown mean, the default) or
+        ``"zero"`` (ML with the mean fixed at zero).
     models
         Structure types to choose from (likelihood, and WLS without a starting model).
     model
@@ -135,4 +152,16 @@ def fit_correlation(
         details = fit_variogram_auto(ev, models=models, fit_method=fit_method)
     else:
         details = fit_variogram(ev, model, fit_method=fit_method)
-    return CorrelationFit(model=details.model, method=method, empirical=ev, details=details)
+    zs = _column(data, value, "value")
+    xs = _column(data, x, "x")
+    ys = _column(data, y, "y")
+    ok = np.isfinite(zs) & np.isfinite(xs) & np.isfinite(ys)
+    return CorrelationFit(
+        model=details.model,
+        method=method,
+        empirical=ev,
+        details=details,
+        x=xs[ok],
+        y=ys[ok],
+        z=zs[ok],
+    )

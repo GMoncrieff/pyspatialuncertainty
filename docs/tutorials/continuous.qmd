@@ -68,9 +68,10 @@ val.select("x", "y", "observed", "predicted", "sd", "std_error").head()
 ## Step 4: correlation of the standardized errors
 
 `fit_correlation` fits a nugget plus an exponential, spherical or Gaussian structure to
-the standardized errors by Gaussian maximum likelihood. By default the mean of the errors
-is fixed at zero, as unbiased predictions imply. A common offset of the validation errors
-then counts as evidence of long-range correlation, which matters most for large blocks.
+the standardized errors by Gaussian likelihood. By default the mean of the errors is
+treated as unknown (REML): the map may be biased, and that bias is estimated and
+propagated in steps 5–8 rather than mistaken for correlation. The fit keeps the
+validation points for that purpose.
 
 The paper fits a sample variogram by weighted least squares instead. That is
 `method="wls"`: a gstat-style sample variogram (a cutoff of 0.33333 × the bounding-box
@@ -125,9 +126,20 @@ For each block, `aggregate_continuous` draws 10,000 pairs of uniform points, ave
 - the relative error.
 
 ```{python}
-domain = psu.aggregate_continuous(real.sd, fit.model, psu.blocks.box(0, 0, 100, 100, real.sd),
+domain = psu.aggregate_continuous(real.sd, fit, psu.blocks.box(0, 0, 100, 100, real.sd),
                                   prediction=real.prediction, n_mc=10_000, level=0.90, seed=1)
-domain.table.select("mean_pred", "sd_mean", "mcse_sd", "lower", "upper", "total_pred", "sd_total")
+domain.table.select("map_mean", "shift", "mean_pred", "sd_mean", "mcse_sd", "lower", "upper", "sd_total")
+```
+
+By default the mean of the standardized errors is estimated from the validation points
+by generalised least squares. The block prediction is shifted by that mean times the
+block mean of σ (`shift`), and the uncertainty of the estimate is added to the block
+variance, less the part of the block error that the validation points already reveal.
+The [method page](../method.qmd#the-default-an-estimated-mean) has the formulas.
+
+```{python}
+est = domain.mean_estimate
+print(f"estimated mean of the standardized errors: {est.beta:.3f} ± {est.se:.3f}")
 ```
 
 ```{python}
@@ -151,29 +163,33 @@ nested_start = (psu.vgm(0.46, "Exp", 2, nugget=0.05) + psu.vgm(0.08, "Sph", 15)
                 + psu.vgm(0.06, "Exp", 60))
 nested = psu.fit_variogram(ev, nested_start, fit_ranges=False)
 print(nested.model)
-dom_nested = psu.aggregate_continuous(real.sd, nested.model, psu.blocks.box(0, 0, 100, 100, real.sd),
-                                      prediction=real.prediction, n_mc=10_000, seed=1)
-dom_wls = psu.aggregate_continuous(real.sd, wls.model, psu.blocks.box(0, 0, 100, 100, real.sd),
-                                   prediction=real.prediction, n_mc=10_000, seed=1)
+box = psu.blocks.box(0, 0, 100, 100, real.sd)
+# the paper's procedure: WLS correlogram, errors assumed to have mean zero
+dom_wls = psu.aggregate_continuous(real.sd, wls, box, prediction=real.prediction, mean="zero",
+                                   n_mc=10_000, seed=1)
+dom_nested = psu.aggregate_continuous(real.sd, nested.model, box, prediction=real.prediction,
+                                      mean="zero", n_mc=10_000, seed=1)
 results = [domain, dom_wls, dom_nested]
-pl.DataFrame({"correlogram": ["likelihood fit (default)", "WLS fit (paper)", "nested, R-script ranges"],
+pl.DataFrame({"approach": ["default (REML, estimated mean)", "paper (WLS, mean zero)",
+                           "nested R-script ranges, mean zero"],
               "sd_of_domain_mean": [r.table["sd_mean"][0] for r in results],
               "mcse_sd": [r.table["mcse_sd"][0] for r in results]})
 ```
 
-In this realization the error of the domain mean,
+In this realization the error of the default domain prediction,
 `{python} f"{float(real.truth.mean()) - domain.table['mean_pred'][0]:.3f}"`, is
 `{python} f"{abs(float(real.truth.mean()) - domain.table['mean_pred'][0]) / domain.table['sd_mean'][0]:.1f}"`
-standard deviations under the likelihood fit,
-`{python} f"{abs(float(real.truth.mean()) - domain.table['mean_pred'][0]) / dom_wls.table['sd_mean'][0]:.1f}"`
-under the WLS fit and
-`{python} f"{abs(float(real.truth.mean()) - domain.table['mean_pred'][0]) / dom_nested.table['sd_mean'][0]:.1f}"`
+of its standard deviations. The map's own domain mean is off by
+`{python} f"{float(real.truth.mean()) - dom_wls.table['mean_pred'][0]:.3f}"`, which is
+`{python} f"{abs(float(real.truth.mean()) - dom_wls.table['mean_pred'][0]) / dom_wls.table['sd_mean'][0]:.1f}"`
+standard deviations under the paper's procedure and
+`{python} f"{abs(float(real.truth.mean()) - dom_nested.table['mean_pred'][0]) / dom_nested.table['sd_mean'][0]:.1f}"`
 under the nested fit. The [verification report](../report.html) quantifies the effect of
 the correlogram tail across many realizations, and `experiments/improvements/` in the
 repository compares the likelihood and WLS fits.
 
 ```{python}
-tiles = psu.aggregate_continuous(real.sd, fit.model, psu.blocks.tiles(real.sd, 25),
+tiles = psu.aggregate_continuous(real.sd, fit, psu.blocks.tiles(real.sd, 25),
                                  prediction=real.prediction, n_mc=10_000, seed=2)
 coarse = tiles.to_xarray(coarse=True)
 fig, axes = plt.subplots(1, 2, figsize=(8, 3.4), constrained_layout=True)
@@ -204,7 +220,8 @@ pl.DataFrame({
 
 The repository ships the R script's exported intermediates in `tests/data/r_reference`:
 the map, the QRF predictions and variances, the hand-set variogram model, and the exact
-Monte Carlo pairs the script drew. Here they go through the same function.
+Monte Carlo pairs the script drew. Here they go through the same function, with
+`mean="zero"`: the paper's procedure, with the script's hand-set correlogram.
 
 ```{python}
 import xarray as xr
@@ -220,7 +237,7 @@ model_r = psu.VariogramModel.from_table(rd("variogram_model.csv"))
 print(model_r)
 
 res_r = psu.aggregate_continuous(np.sqrt(as_da("predVarRF")), model_r, psu.blocks.box(0, 0, 100, 100, as_da("y")),
-                                 prediction=as_da("predRF"), n_mc=1_000_000, z=1.64, seed=1)
+                                 prediction=as_da("predRF"), mean="zero", n_mc=1_000_000, z=1.64, seed=1)
 summary = dict(zip(*rd("summary.csv").to_dict(as_series=False).values()))
 pl.DataFrame({
     "quantity": ["SD of block mean", "90% PI lower (z = 1.64)", "90% PI upper", "SD of block total"],

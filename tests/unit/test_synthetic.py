@@ -109,7 +109,7 @@ def test_error_scenario_truth_and_oracle(small_error_scenario: ErrorModelScenari
     # the method with the true sigma and correlation (oracle) agrees with the truth
     sd_map = sc.sigma_map()
     res = psu.aggregate_continuous(
-        sd_map, sc.true_correlation(), blocks.blockset, n_mc=40_000, seed=6
+        sd_map, sc.true_correlation(), blocks.blockset, mean="zero", n_mc=40_000, seed=6
     )
     np.testing.assert_allclose(res.table["sd_mean"].to_numpy(), exact, rtol=0.03)
     # validation errors: standardized variance near one, nugget share visible at short lags

@@ -67,8 +67,9 @@ def as_correlation(obj: object, *, check: bool = True) -> CorrelationFunction:
     Parameters
     ----------
     obj
-        A `VariogramModel` (converted with
-        `from_variogram`) or any callable mapping distances to correlations.
+        A `VariogramModel` (converted with `from_variogram`), a fit holding one (a
+        `CorrelationFit` or `ClassVariogram`), or any callable mapping distances to
+        correlations.
     check
         Sanity-check the function: ρ(0) must be 1 and ρ(h) must lie in [−1, 1] on a few
         test distances. Violations raise ``ValueError``.
@@ -81,6 +82,9 @@ def as_correlation(obj: object, *, check: bool = True) -> CorrelationFunction:
     from pyspatialuncertainty.variogram.models import VariogramModel
 
     func: CorrelationFunction
+    fitted = getattr(obj, "model", None)
+    if isinstance(fitted, VariogramModel) and not isinstance(obj, VariogramCorrelation):
+        obj = fitted
     if isinstance(obj, VariogramModel):
         func = VariogramCorrelation(obj)
     elif isinstance(obj, VariogramCorrelation | CallableCorrelation):

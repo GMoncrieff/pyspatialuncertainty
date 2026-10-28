@@ -19,9 +19,17 @@ The method in eight steps (Section 4.1 of the paper):
 7. scale the variance by |B|² for block totals;
 8. report standard deviations and prediction intervals.
 
-For maps of calibrated class probabilities, `indicator_errors`,
-`fit_class_variograms` and `aggregate_categorical` apply the same procedure per
-class to the indicator errors I_k − p_k with σ_k = sqrt(p_k(1 − p_k)).
+For maps of class probabilities, `indicator_errors`, `fit_class_variograms` and
+`aggregate_categorical` apply the same procedure per class to the indicator errors
+I_k − p_k with σ_k = sqrt(p_k(1 − p_k)).
+
+Defaults differ from the paper in one respect: the mean of the standardized errors is
+treated as unknown. The correlogram is fitted by REML, the mean is estimated by GLS from
+the validation points, and block predictions and variances are corrected for it
+(`pyspatialuncertainty.mean_correction`). This keeps intervals honest when a map is
+biased or its probabilities are miscalibrated. The paper's procedure is
+``fit_correlation(..., method="wls")`` followed by
+``aggregate_continuous(..., mean="zero")``.
 """
 
 from importlib.metadata import version as _version
@@ -51,6 +59,7 @@ from pyspatialuncertainty.correlation import (
 from pyspatialuncertainty.grid import GridError, GridSpec
 from pyspatialuncertainty.integrate import Integrand, MCResult, mc_block_variance
 from pyspatialuncertainty.intervals import normal_interval, z_value
+from pyspatialuncertainty.mean_correction import MeanEstimate, estimate_mean
 from pyspatialuncertainty.standardize import sd_from_quantiles, sd_from_samples, standardized_errors
 from pyspatialuncertainty.variogram import (
     CorrelationFit,
@@ -93,6 +102,7 @@ __all__ = [
     "MCResult",
     "Matern",
     "MaternStein",
+    "MeanEstimate",
     "Nugget",
     "ProbabilityError",
     "ResolvedBlock",
@@ -108,6 +118,7 @@ __all__ = [
     "blocks",
     "clip_probabilities",
     "empirical_variogram",
+    "estimate_mean",
     "fit_class_variograms",
     "fit_correlation",
     "fit_likelihood",

@@ -91,9 +91,10 @@ errors.head()
 ## One correlogram per class
 
 `fit_class_variograms` fits each class with `fit_correlation`. By default this is a
-Gaussian likelihood fit with the mean of the errors fixed at zero, which calibrated
-probabilities imply. `method="wls"` gives the paper's weighted least-squares variogram
-fit instead. The sample variograms are shown for checking.
+Gaussian likelihood fit with an unknown mean of the errors (REML): the probabilities may
+be miscalibrated, and the next step estimates and corrects for that. `method="wls"` gives
+the paper's weighted least-squares variogram fit instead. The sample variograms are shown
+for checking.
 
 ```{python}
 fits = psu.fit_class_variograms(errors)
@@ -114,13 +115,20 @@ sills should be near 1. A sill far from 1 is a sign of miscalibration.
 ## Expected class areas and their uncertainty
 
 The blocks are 20 × 20 tiles plus two polygons. All classes share the same Monte Carlo
-point pairs.
+point pairs. By default the mean of each class's standardized errors is estimated from
+the validation points (held by `fits`), and the block fractions are shifted by it
+(`shift`); `mean="zero"` would trust the probabilities' calibration instead.
 
 ```{python}
-correlations = {cls: cv.model for cls, cv in fits.items()}
-tiles = psu.aggregate_categorical(probs, correlations, psu.blocks.tiles(probs, 20), n_mc=10_000, seed=1)
+tiles = psu.aggregate_categorical(probs, fits, psu.blocks.tiles(probs, 20), n_mc=10_000, seed=1)
 tiles.table.filter(pl.col("block_id") < 2).select(
-    "class", "block_id", "area", "fraction", "sd_fraction", "lower", "upper", "expected_area", "sd_area")
+    "class", "block_id", "map_fraction", "shift", "fraction", "sd_fraction", "lower", "upper", "sd_area")
+```
+
+```{python}
+pl.DataFrame({"class": list(tiles.mean_estimates),
+              "estimated mean of standardized errors": [e.beta for e in tiles.mean_estimates.values()],
+              "standard error": [e.se for e in tiles.mean_estimates.values()]})
 ```
 
 ```{python}
@@ -138,7 +146,7 @@ Polygons work the same way. Monte Carlo points are drawn inside the exact geomet
 
 ```{python}
 regions = [shapely.Polygon([(5, 5), (60, 10), (40, 50), (8, 40)]), shapely.box(45, 45, 78, 78)]
-poly = psu.aggregate_categorical(probs, correlations, psu.blocks.polygons(regions, probs, ids=["west", "north-east"]),
+poly = psu.aggregate_categorical(probs, fits, psu.blocks.polygons(regions, probs, ids=["west", "north-east"]),
                                  n_mc=10_000, seed=2)
 poly.table.select("class", "block_id", "area", "expected_area", "sd_area", "area_lower", "area_upper")
 ```
@@ -152,7 +160,7 @@ we can check whether the true block fractions fall inside the 90 % intervals:
 from pyspatialuncertainty.synthetic import evaluation_blocks
 
 eb = evaluation_blocks(sc.layout, tile_sizes=(20,), max_per_size=16, n_polygons=0)
-res = psu.aggregate_categorical(probs, correlations, eb.blockset, n_mc=10_000, seed=3)
+res = psu.aggregate_categorical(probs, fits, eb.blockset, n_mc=10_000, seed=3)
 pred = res.table["fraction"].to_numpy().reshape(3, -1)
 sd = res.table["sd_fraction"].to_numpy().reshape(3, -1)
 rng = np.random.default_rng(11)

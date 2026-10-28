@@ -13,12 +13,18 @@ calibrated probability p_k(s) and indicator I_k(s) (1 if s belongs to class k):
 * the expected fraction of class k in B is the block mean of p_k and the expected class
   area is |B| times that fraction.
 
+Probabilities are rarely perfectly calibrated, so by default the mean of each class's
+standardized errors is estimated from the validation points and the fractions and their
+variances are corrected for it, exactly as for continuous maps (see
+`pyspatialuncertainty.mean_correction`). ``mean="zero"`` trusts the calibration.
+
 Cross-class covariances (the class fractions in a block sum to one) and the joint
 distribution of class areas are not modelled.
 """
 
 from __future__ import annotations
 
+import warnings
 from collections.abc import Hashable, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any
@@ -35,7 +41,20 @@ from pyspatialuncertainty.continuous import block_means
 from pyspatialuncertainty.correlation import CorrelationFunction, as_correlation
 from pyspatialuncertainty.integrate import Integrand, mc_block_variance
 from pyspatialuncertainty.intervals import normal_interval, z_value
-from pyspatialuncertainty.variogram.correlation_fit import CorrelationMethod, fit_correlation
+from pyspatialuncertainty.mean_correction import (
+    MeanEstimate,
+    MeanTreatment,
+    block_terms,
+    check_fit_mean,
+    estimate_mean,
+    validation_points,
+    variogram_of,
+)
+from pyspatialuncertainty.variogram.correlation_fit import (
+    CorrelationFit,
+    CorrelationMethod,
+    fit_correlation,
+)
 from pyspatialuncertainty.variogram.empirical import EmpiricalVariogram, Estimator
 from pyspatialuncertainty.variogram.fit import FitMethod, VariogramFit
 from pyspatialuncertainty.variogram.likelihood import LikelihoodFit, MeanModel
@@ -256,11 +275,17 @@ class ClassVariogram:
         Sample variogram of the standardized indicator errors.
     fit
         The `LikelihoodFit` (default) or the WLS `VariogramFit`.
+    x, y, z
+        Coordinates and standardized errors of the class's validation points, used by
+        `aggregate_categorical` to estimate the mean of the errors.
     """
 
     cls: Hashable
     empirical: EmpiricalVariogram
     fit: LikelihoodFit | VariogramFit
+    x: FloatArray | None = field(default=None, repr=False)
+    y: FloatArray | None = field(default=None, repr=False)
+    z: FloatArray | None = field(default=None, repr=False)
 
     @property
     def model(self) -> VariogramModel:
@@ -272,7 +297,7 @@ def fit_class_variograms(
     errors: pl.DataFrame,
     *,
     method: CorrelationMethod | None = None,
-    mean: MeanModel = "zero",
+    mean: MeanModel = "constant",
     model: VariogramModel | Mapping[Hashable, VariogramModel] | None = None,
     cutoff: float | None = None,
     width: float | None = None,
@@ -282,7 +307,9 @@ def fit_class_variograms(
     """Fit one correlation model per class to standardized indicator errors (step 4).
 
     Each class is fitted with `fit_correlation`: by default a Gaussian likelihood fit with
-    the mean of the errors fixed at zero, which calibrated probabilities imply.
+    an unknown mean of the errors (REML), which goes with the estimated-mean correction of
+    `aggregate_categorical`. ``mean="zero"`` fixes the mean at zero, as perfectly
+    calibrated probabilities imply.
 
     Parameters
     ----------
@@ -292,7 +319,7 @@ def fit_class_variograms(
         ``"likelihood"`` or ``"wls"`` (the paper's weighted least-squares variogram fit).
         The default is ``"likelihood"``, or ``"wls"`` when a starting ``model`` is given.
     mean
-        Likelihood only: ``"zero"`` (ML) or ``"constant"`` (REML).
+        Likelihood only: ``"constant"`` (REML, default) or ``"zero"`` (ML).
     model
         WLS only: starting model(s), one for all classes or a mapping per class. Without
         one, the WLS fit chooses among nugget + exponential/spherical/Gaussian models
@@ -326,7 +353,9 @@ def fit_class_variograms(
             width=width,
             estimator=estimator,
         )
-        out[cls] = ClassVariogram(cls=cls, empirical=fit.empirical, fit=fit.details)
+        out[cls] = ClassVariogram(
+            cls=cls, empirical=fit.empirical, fit=fit.details, x=fit.x, y=fit.y, z=fit.z
+        )
     return out
 
 
@@ -338,10 +367,12 @@ class ClassAreaUncertainty:
     ----------
     table
         One row per class and block with columns ``class``, ``block_id``, ``area`` (|B|),
-        ``n_cells``, ``fraction`` (block mean of p_k), ``var_fraction`` and ``mcse_var``,
-        ``sd_fraction``, ``lower`` and ``upper`` (prediction interval of the fraction, clipped
-        to [0, 1]), ``expected_area`` (|B| · fraction), ``sd_area``, ``area_lower`` and
-        ``area_upper``.
+        ``n_cells``, ``map_fraction`` (block mean of p_k), ``shift`` (correction for the
+        estimated mean error, zero with ``mean="zero"``), ``fraction`` (``map_fraction +
+        shift``), ``var_fraction`` and ``mcse_var``, ``var_known_mean`` (the Monte Carlo
+        integral alone), ``sd_fraction``, ``lower`` and ``upper`` (prediction interval of
+        the fraction, clipped to [0, 1]), ``expected_area`` (|B| · fraction), ``sd_area``,
+        ``area_lower`` and ``area_upper``.
     blockset
         The blocks.
     classes
@@ -352,6 +383,11 @@ class ClassAreaUncertainty:
         Nominal coverage of the prediction intervals.
     z
         Normal quantile used for the intervals.
+    mean
+        ``"constant"`` (the mean of each class's standardized errors was estimated) or
+        ``"zero"``.
+    mean_estimates
+        Class label → estimated mean and its uncertainty (empty with ``mean="zero"``).
     """
 
     table: pl.DataFrame
@@ -361,6 +397,8 @@ class ClassAreaUncertainty:
     level: float
     z: float
     cells: tuple[IntArray, ...] = field(repr=False, default=())
+    mean: MeanTreatment = "constant"
+    mean_estimates: dict[Hashable, MeanEstimate] = field(default_factory=dict, repr=False)
 
     def to_xarray(
         self, columns: Sequence[str] | None = None, *, coarse: bool = False
@@ -388,10 +426,13 @@ def aggregate_categorical(
     probabilities: xr.DataArray,
     correlations: CorrelationFunction
     | VariogramModel
-    | Mapping[Hashable, CorrelationFunction | VariogramModel],
+    | Mapping[Hashable, ClassVariogram | CorrelationFit | CorrelationFunction | VariogramModel],
     blocks: BlockSet,
     *,
     class_dim: str = "class",
+    mean: MeanTreatment = "constant",
+    validation: pl.DataFrame | None = None,
+    cross_term: bool = True,
     n_mc: int = 10_000,
     level: float = 0.90,
     z: float | None = None,
@@ -407,12 +448,27 @@ def aggregate_categorical(
         Calibrated class probabilities on the grid of ``blocks``, with a class dimension.
         They must sum to one and lie strictly between 0 and 1 (checked).
     correlations
-        Correlation function of the standardized indicator errors for each class (a mapping
-        from class label), or one function or variogram model used for all classes.
+        Correlation model of the standardized indicator errors for each class: the
+        mapping returned by `fit_class_variograms` (which also holds the validation
+        points), a mapping from class label to a variogram model or fit, or one model used
+        for all classes. With ``mean="zero"`` any correlation callables will do.
     blocks
         Blocks to aggregate over.
     class_dim
         Name of the class dimension.
+    mean
+        ``"constant"`` (default): the mean of each class's standardized errors is
+        estimated by GLS from the validation points; fractions are shifted by it and its
+        uncertainty is added to their variances (see
+        `pyspatialuncertainty.mean_correction`). ``"zero"``: the probabilities are trusted
+        to be calibrated and the errors to have mean zero.
+    validation
+        Standardized indicator errors at the validation points, as returned by
+        `indicator_errors` (columns ``x``, ``y``, ``class`` and ``std_error``). Defaults to
+        the points stored on the `ClassVariogram` fits.
+    cross_term
+        With ``mean="constant"``, subtract the covariance between the block error and the
+        estimated mean (default). Without it the intervals are wider.
     n_mc
         Number of pairs of uniform points per block; all classes share the same pairs.
     level, z
@@ -430,16 +486,35 @@ def aggregate_categorical(
         Per class and block: expected fraction and area, standard deviations and prediction
         intervals.
     """
+    if mean not in ("constant", "zero"):
+        raise ValueError("mean must be 'constant' or 'zero'")
     classes = _class_axis(probabilities, class_dim)
     validate_probabilities(probabilities, class_dim=class_dim, atol=atol)
     if isinstance(correlations, Mapping):
         missing = [c for c in classes if c not in correlations]
         if missing:
             raise ValueError(f"no correlation function for classes {missing}")
-        corrs = [as_correlation(correlations[c]) for c in classes]
+        given = [correlations[c] for c in classes]
     else:
-        shared = as_correlation(correlations)
-        corrs = [shared] * len(classes)
+        given = [correlations] * len(classes)
+    corrs = [as_correlation(c) for c in given]
+    estimates: dict[Hashable, MeanEstimate] = {}
+    if mean == "constant":
+        for cls, c in zip(classes, given, strict=True):
+            model = variogram_of(c)
+            if model is None:
+                raise ValueError(
+                    f"estimating the mean (mean='constant') needs a variogram model or fit for "
+                    f"class {cls!r}; use mean='zero' with plain correlation functions"
+                )
+            check_fit_mean(c)
+            if validation is not None:
+                if "class" not in validation.columns:
+                    raise ValueError("validation needs a 'class' column (see indicator_errors)")
+                pts = validation_points(None, validation.filter(pl.col("class") == cls))
+            else:
+                pts = validation_points(c, None, what="the fits of fit_class_variograms")
+            estimates[cls] = estimate_mean(model, *pts)
 
     g = blocks.grid
     p_flat = [g.values(probabilities.isel({class_dim: k})) for k in range(len(classes))]
@@ -454,8 +529,24 @@ def aggregate_categorical(
     ids = ids_to_series([b.id for b in resolved])
     frames = []
     for k, cls in enumerate(classes):
-        frac = block_means(resolved, p_flat[k])
-        var = mc.variance[k]
+        map_frac = block_means(resolved, p_flat[k])
+        var_known = mc.variance[k]
+        shift = np.zeros(len(resolved))
+        var = var_known
+        if cls in estimates:
+            terms = block_terms(estimates[cls], sds[k], g, resolved, cross_term=cross_term)
+            shift = terms.shift
+            var = var_known + terms.var_beta - terms.cross
+            with np.errstate(invalid="ignore"):
+                noisy = np.isfinite(var) & (var < 3.0 * mc.mcse[k])
+            if np.any(noisy):
+                warnings.warn(
+                    f"class {cls!r}: for {int(noisy.sum())} block(s) the corrected variance is "
+                    "less than three Monte Carlo standard errors (it can even be negative); "
+                    "increase n_mc",
+                    stacklevel=2,
+                )
+        frac = map_frac + shift
         sd = np.sqrt(np.maximum(var, 0.0))
         lower, upper = normal_interval(frac, sd, z=mult, lower_bound=0.0, upper_bound=1.0)
         frames.append(
@@ -465,9 +556,12 @@ def aggregate_categorical(
                     ids,
                     pl.Series("area", area),
                     pl.Series("n_cells", [b.n_cells for b in resolved], dtype=pl.Int64),
+                    pl.Series("map_fraction", map_frac),
+                    pl.Series("shift", shift),
                     pl.Series("fraction", frac),
                     pl.Series("var_fraction", var),
                     pl.Series("mcse_var", mc.mcse[k]),
+                    pl.Series("var_known_mean", var_known),
                     pl.Series("sd_fraction", sd),
                     pl.Series("lower", lower),
                     pl.Series("upper", upper),
@@ -486,4 +580,6 @@ def aggregate_categorical(
         level=level,
         z=mult,
         cells=tuple(b.cells for b in resolved),
+        mean=mean,
+        mean_estimates=estimates,
     )

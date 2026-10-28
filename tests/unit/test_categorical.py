@@ -129,9 +129,12 @@ def test_fit_class_variograms_auto_and_given_model() -> None:
     fits = psu.fit_class_variograms(e)
     assert set(fits) == {"a", "b", "c"}
     for f in fits.values():
-        # default: zero-mean likelihood fit
+        # default: REML likelihood fit, keeping the validation points
         assert isinstance(f.fit, psu.LikelihoodFit)
-        assert f.fit.mean == "zero"
+        assert f.fit.mean == "constant"
+        assert f.x is not None
+        assert f.z is not None
+        assert f.z.size == n
         # independent errors with calibrated probabilities: sill near 1, no correlation
         assert 0.5 < f.model.sill < 1.6
         assert np.all(f.model.correlation(np.array([5.0, 20.0])) < 0.15)
@@ -153,7 +156,9 @@ def test_fit_class_variograms_auto_and_given_model() -> None:
 def test_aggregate_categorical_basic_properties() -> None:
     p = dirichlet_map(seed=1)
     corr = psu.vgm(1.0, "Exp", 3.0)
-    res = psu.aggregate_categorical(p, corr, psu.blocks.tiles(p, 15), n_mc=4000, seed=2)
+    res = psu.aggregate_categorical(
+        p, corr, psu.blocks.tiles(p, 15), mean="zero", n_mc=4000, seed=2
+    )
     t = res.table
     assert t.height == 3 * 4
     assert res.classes == ("a", "b", "c")
@@ -176,7 +181,7 @@ def test_aggregate_categorical_basic_properties() -> None:
 def test_binary_symmetry_with_shared_pairs() -> None:
     p = dirichlet_map(k=2, seed=3)
     res = psu.aggregate_categorical(
-        p, psu.vgm(1.0, "Sph", 8.0), psu.blocks.tiles(p, 10), n_mc=2000, seed=5
+        p, psu.vgm(1.0, "Sph", 8.0), psu.blocks.tiles(p, 10), mean="zero", n_mc=2000, seed=5
     )
     a = res.table.filter(pl.col("class") == "a")["var_fraction"].to_numpy()
     b = res.table.filter(pl.col("class") == "b")["var_fraction"].to_numpy()

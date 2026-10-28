@@ -58,6 +58,7 @@ def test_block_mean_prediction_and_area(
         model,
         psu.blocks.box(0, 0, 100, 100, sd_map),
         prediction=r_maps["predRF"],
+        mean="zero",
         n_mc=1000,
         seed=0,
     )
@@ -77,6 +78,7 @@ def python_highm(
         model,
         psu.blocks.box(0, 0, 100, 100, sd_map),
         prediction=r_maps["predRF"],
+        mean="zero",
         n_mc=1_000_000,
         z=1.64,
         seed=20231320,

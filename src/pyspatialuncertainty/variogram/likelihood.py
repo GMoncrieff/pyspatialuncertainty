@@ -11,18 +11,21 @@ largest likelihood is returned as a ``Nug + <model>`` variogram model.
 
 The mean can be handled in two ways.
 
-* ``mean="zero"`` (default): maximum likelihood with μ = 0. The method assumes this
-  anyway: unbiased predictions, or calibrated probabilities, give standardized errors
-  with mean zero. A common offset of the validation errors then counts as evidence of
-  long-range correlation. That is the error component that dominates the uncertainty of
-  large blocks, and the sample variogram cannot see it.
-* ``mean="constant"``: restricted maximum likelihood (REML) with an unknown constant
-  mean, which, like the sample variogram, ignores a common offset.
+* ``mean="constant"`` (default): restricted maximum likelihood (REML) with an unknown
+  constant mean, which, like the sample variogram, ignores a common offset. This goes
+  with the estimated-mean correction that the aggregation functions apply by default
+  (see `pyspatialuncertainty.mean_correction`): the offset is estimated and propagated
+  there instead of being read as correlation.
+* ``mean="zero"``: maximum likelihood with μ = 0, as the original method assumes
+  (unbiased predictions, or calibrated probabilities). A common offset of the validation
+  errors then counts as evidence of long-range correlation, the error component that
+  dominates the uncertainty of large blocks. Use it with ``mean="zero"`` in the
+  aggregation functions.
 
 In simulation studies on known truth (``experiments/improvements`` in the repository),
-the zero-mean fit improved the coverage of block prediction intervals and halved the
-error of block standard deviations compared with the WLS variogram fit, most of all for
-large blocks.
+both likelihood fits gave better-calibrated block intervals than the WLS variogram fit,
+most of all for large blocks, and REML with the estimated-mean correction was the most
+robust to miscalibrated maps.
 
 Each likelihood evaluation factorises a dense n × n matrix, so the cost grows as n³:
 about 1 s for 300 points and 30 s for 1,500 points on one core. Above
@@ -97,7 +100,7 @@ def fit_likelihood(
     x: str | ArrayLike = "x",
     y: str | ArrayLike = "y",
     *,
-    mean: MeanModel = "zero",
+    mean: MeanModel = "constant",
     models: Sequence[ModelType] = ("Exp", "Sph", "Gau"),
     max_practical_range: float | None = None,
 ) -> LikelihoodFit:
@@ -111,8 +114,8 @@ def fit_likelihood(
     value, x, y
         Column names (or arrays) of the standardized errors and the coordinates.
     mean
-        ``"zero"`` (default) fixes the mean of the errors at zero (ML). ``"constant"``
-        estimates a constant mean (REML).
+        ``"constant"`` (default) estimates a constant mean (REML). ``"zero"`` fixes the
+        mean of the errors at zero (ML).
     models
         Structure types to try: any of ``"Exp"``, ``"Sph"`` and ``"Gau"``.
     max_practical_range
@@ -129,7 +132,7 @@ def fit_likelihood(
     >>> import numpy as np
     >>> rng = np.random.default_rng(0)
     >>> xy = rng.uniform(0, 100, size=(200, 2))
-    >>> fit = fit_likelihood(None, rng.normal(size=200), xy[:, 0], xy[:, 1])
+    >>> fit = fit_likelihood(None, rng.normal(size=200), xy[:, 0], xy[:, 1], mean="zero")
     >>> # independent errors: (almost) no correlation beyond the point spacing
     >>> bool(fit.model.correlation(np.array([10.0]))[0] < 0.1)
     True

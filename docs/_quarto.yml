@@ -57,6 +57,8 @@ quartodoc:
       contents:
         - aggregate_continuous
         - BlockUncertainty
+        - estimate_mean
+        - MeanEstimate
         - standardized_errors
         - sd_from_samples
         - sd_from_quantiles

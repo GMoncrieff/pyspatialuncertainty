@@ -30,7 +30,7 @@ def test_recovers_nugget_share_and_range() -> None:
     x, y, z, _ = correlated_errors(300, 5, seed=1)
     shares, ranges, sills = [], [], []
     for b in range(z.shape[1]):
-        m = psu.fit_likelihood(None, z[:, b], x, y, models=("Exp",)).model
+        m = psu.fit_likelihood(None, z[:, b], x, y, mean="zero", models=("Exp",)).model
         shares.append(m.nugget / m.sill)
         ranges.append(m.structures[-1].range)
         sills.append(m.sill)
@@ -127,7 +127,9 @@ def test_fit_correlation_methods() -> None:
     default = psu.fit_correlation(val)
     assert default.method == "likelihood"
     assert isinstance(default.details, psu.LikelihoodFit)
-    assert default.details.mean == "zero"
+    assert default.details.mean == "constant"
+    assert default.z is not None
+    np.testing.assert_array_equal(default.z, z[:, 0])
     assert default.model == psu.fit_likelihood(val).model
     np.testing.assert_array_equal(default.empirical.gamma, ev.gamma)
     assert float(default.correlation(np.array([0.0]))[0]) == 1.0
