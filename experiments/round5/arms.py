@@ -33,9 +33,12 @@ PRACTICAL = {"Exp": 3.0, "Sph": 1.0, "Gau": math.sqrt(3.0)}
 def gls_factor(corr: sh.Corr, x: np.ndarray, y: np.ndarray) -> tuple[np.ndarray, bool]:
     """Cholesky factor of the correlation matrix of the validation errors (nugget on the
     diagonal), as `mean_correction.estimate_mean` builds it."""
-    D = np.hypot(x[:, None] - x[None, :], y[:, None] - y[None, :])
-    K = corr.struct(D)
-    del D
+    n = x.size
+    K = np.empty((n, n))
+    step = 250  # rows at a time: one n × n matrix in memory, not several temporaries
+    for a in range(0, n, step):
+        b = min(a + step, n)
+        K[a:b] = corr.struct(np.hypot(x[a:b, None] - x[None, :], y[a:b, None] - y[None, :]))
     K[np.diag_indices_from(K)] = 1.0 + 1e-10
     return linalg.cho_factor(K, lower=True, overwrite_a=True, check_finite=False)
 
