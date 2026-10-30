@@ -29,6 +29,8 @@ per class for class-probability maps (σ_k = √(p_k(1 − p_k))).
 - `claude/unknown-mean-experiments`: rounds 3–4 (`experiments/improvements/round3*.py`,
   `round4.py`, `candidates.py` with the `ok`, `ok_nc`, `ok_strata`, `ok_logit`, oracle
   and design-based arms) and the write-up in `experiments/improvements/README.md`.
+- `claude/round5-experiments` (off `ok`): round 5, `experiments/round5/` (harness with exact
+  FFT V_B, `README.md`, `scorecard.md`). Results and the "Round 5 Ideas" report are not in the repo.
 
 ## Working conventions (from the user)
 
@@ -94,9 +96,28 @@ design-weighted Dirichlet calibrator with spatially cross-fitted out-of-fold p.
 - REML again found domain-scale correlograms (ranges of hundreds of km) in some
   half-sample fits, giving very wide intervals.
 
+## Lessons from round 5 (1024² class landscape, paired with the landscape check)
+
+- Calibration uncertainty is the biggest missing term on recalibrated maps: a calibrator
+  bootstrap (50 refits, clusters resampled for clustered samples) cut `ok`'s landscape
+  coverage error by 35–46 % on vector-scaled maps. On continuous maps it helps after a
+  linear recalibration; a σ factor alone does not move the estimate, so it adds nothing.
+- REML on indicator errors picks Gaussian ~75 % of the time with 50 points; Exp/Sph only
+  is a small, consistent gain. Sigma-point parameter uncertainty is another small gain.
+- Logit intervals help the landscape (B → 0.034–0.049, near Olofsson) but cover ~60 % at
+  4×4; use them only for very large blocks.
+- Large-block undercoverage is mostly the correlogram fit (true correlogram: 256×256
+  error 0.082 → 0.027). A σσ-weighted fit fixes 256×256 but puts estimates outside [0, 1].
+- New mean models (logit intercept, X = σ, EB shrinkage) and a range cap did not help.
+  X = 1/σ fixes a constant continuous offset but breaks a σ-shaped one.
+- Temperature recalibration (M3) stays the worst case: rare class at 5,000 random points
+  covers 6 % at the landscape.
+
 ## Open next steps
 
-- A cap on the practical range in the REML fit.
+- Package proposals awaiting approval: calibrator bootstrap variance, Exp/Sph-only REML
+  for class maps, a sigma-point parameter-uncertainty option, logit intervals for large blocks.
+- A large-block correlogram fit that keeps the GLS mean stable.
 - Exact V_B (FFT cell sums) in the package for large validation sets.
 - A design-weighted or strata-aware mean in the package (`X` design in the GLS).
 - Class-map `ok` with exact V_B; the σσ-weighted correlogram for rare classes.
