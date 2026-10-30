@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import argparse
 import math
+import resource
 import time
 import warnings
 from concurrent.futures import ProcessPoolExecutor
@@ -369,6 +370,8 @@ def task(args: tuple[int, str, str, tuple[str, ...], int, int]) -> tuple[int, st
     d = Path(out_dir) / map_name
     dg.write_parquet(d / f"d{r:03d}.parquet")
     df.write_parquet(d / f"r{r:03d}.parquet")
+    peak = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024
+    print(f"  peak memory r{r} {map_name}: {peak:.0f} MB", flush=True)
     return r, map_name, time.time() - t0
 
 
@@ -394,7 +397,9 @@ def main() -> None:
         for m in maps
         if not (out / m / f"r{r:03d}.parquet").exists()
     ]
-    with ProcessPoolExecutor(a.workers, mp_context=get_context("spawn")) as ex:
+    with ProcessPoolExecutor(
+        a.workers, mp_context=get_context("spawn"), max_tasks_per_child=1
+    ) as ex:  # a fresh process per task keeps memory from creeping up
         for r, m, sec in ex.map(task, todo):
             print(f"realization {r} {m}: {sec:.0f}s", flush=True)
 
