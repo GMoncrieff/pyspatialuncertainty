@@ -38,7 +38,7 @@ from pyspatialuncertainty.variogram.likelihood import fit_likelihood
 
 ALL_ARMS = (
     "current", "ok", "ok_lin", "ok_cil", "ok_cil_n", "ok_eb", "ok_eb_pool", "fam_es", "cap", "sw",
-    "oracle_zero", "oracle_ok", "vparam", "current_cb", "ok_cb", "ppi", "olofsson",
+    "oracle_zero", "oracle_ok", "vparam", "current_cb", "ok_cb", "ppi", "olofsson", "A", "B", "D",
 )  # fmt: skip
 CAP_FRACTION = 0.25  # practical range ≤ ¼ of the fit sample's bounding-box diagonal
 
@@ -117,6 +117,7 @@ def setting(
     cur_var: dict[int, np.ndarray] = {}
     cil_maps: dict[int, np.ndarray] = {}
     cil_var: dict[int, np.ndarray] = {}
+    combo_g: dict[int, dict[str, np.ndarray]] = {}  # GLS weights per combo, for the bootstrap
 
     def ok_like(
         j: int, corr: sh.Corr, z: np.ndarray, kern: sh.Kernels | None = None
@@ -228,6 +229,42 @@ def setting(
             if ("vparam", c) not in out:
                 out[("vparam", c)] = (ok.est, ok.var)
             d |= {"vparam_status": status}
+        if arms & {"A", "B", "D"}:
+            # A: Exp/Sph-only REML fit, with the correlogram-parameter uncertainty (vparam)
+            if sh.family(m1) in ("Exp", "Sph", "Nug"):
+                m_a, r_a = m1, ok
+            else:
+                m_a, _ = fit(zs, xs, ys, mean="constant", models=("Exp", "Sph"))
+                r_a = ok_like(j, sh.corr_of_model(m_a), z)
+            var_a = r_a.var
+            st_a = "skipped"
+            if n <= vmax and not (f0 or f1) and sh.family(m_a) != "Nug":
+                pts, w, code, st_a = ar.sigma_points(zs, xs, ys, m_a)
+                if len(pts) > 1:
+                    res = [r_a] + [
+                        ok_like(j, sh.corr_of_model(ar.model_of(code, pt)), z) for pt in pts[1:]
+                    ]
+                    E, V = np.stack([q.est for q in res]), np.stack([q.var for q in res])
+                    var_a = w @ V + w @ (E - r_a.est) ** 2
+            out[("A", c)] = (r_a.est, var_a)
+            combo_g[j] = {"A": r_a.gls.G[0]}
+            d |= describe("fA", m_a) | {"A_vparam": st_a}
+            # D: the σσ-weighted correlogram for blocks of 256 cells and more, A below
+            try:
+                m_d = wls(sigma_weighted(pairs(xs, ys), (yj - pj)[sub], sj[sub]))
+                r_d = ok_like(j, sh.corr_of_model(m_d), z)
+                d |= describe("fD", m_d) | {"D_status": "fit"}
+            except Exception as err:  # degenerate sample variograms: keep A, flag it
+                r_d = r_a
+                d |= {"D_status": f"failed: {type(err).__name__}"}
+            large = layout.side_of_block >= 256
+            out[("D", c)] = (
+                np.where(large, r_d.est, r_a.est),
+                np.where(large, r_d.var, var_a),
+            )
+            combo_g[j]["D"] = r_d.gls.G[0]
+            # B: A plus the calibrator bootstrap (added below on recalibrated maps)
+            out[("B", c)] = out[("A", c)]
         if "ppi" in arms:
             est = np.full(nb, np.nan)
             var = np.full(nb, np.nan)
@@ -265,7 +302,7 @@ def setting(
             out[("ok_cil_n", c)] = (bmat @ (cil_maps[j] / tot), cil_var[j])
 
     # bootstrap of the calibrator (calibrated-after-miscalibration maps)
-    if calib is not None and boot > 1 and arms & {"current_cb", "ok_cb"}:
+    if calib is not None and boot > 1 and arms & {"current_cb", "ok_cb", "B", "D"}:
         cal, lp = calib
         fit_cal, apply_cal = sh.CALIBRATORS[cal]
         cc = dr.cal_cells[design][:n]
@@ -276,6 +313,8 @@ def setting(
         groups = np.split(order, np.cumsum(counts)[:-1])  # calibration points per cluster
         bsh = np.empty((boot, len(sh.CLASSES), nb))
         es = np.empty((boot, len(sh.CLASSES), nb))
+        names = ["ok"] + (["A", "D"] if combo_g else [])
+        ec = {k: np.empty((boot, len(sh.CLASSES), nb)) for k in names}
         for b in range(boot):
             idx = np.concatenate([groups[g] for g in rng.integers(0, len(groups), len(groups))])
             pb = sh.clip_norm(apply_cal(fit_cal(lp[:, cc[idx]], cl[idx]), lp))
@@ -283,11 +322,22 @@ def setting(
                 sdb = np.sqrt(pb[j] * (1.0 - pb[j]))
                 bsh[b, j] = bmat @ pb[j]
                 zb = ((lab == j) - pb[j, cells]) / sdb[cells]
-                es[b, j] = bsh[b, j] + (bmat @ sdb) * float(oks[j].gls.G[0] @ zb)
+                xb = bmat @ sdb
+                es[b, j] = bsh[b, j] + xb * float(oks[j].gls.G[0] @ zb)
+                for k in names[1:]:
+                    ec[k][b, j] = bsh[b, j] + xb * float(combo_g[j][k] @ zb)
         for j, c in enumerate(sh.CLASSES):
             v_sh, v_es = bsh[:, j].var(axis=0, ddof=1), es[:, j].var(axis=0, ddof=1)
             out[("current_cb", c)] = (share[j], cur_var[j] + v_sh)
             out[("ok_cb", c)] = (oks[j].est, oks[j].var + v_es)
+            if combo_g:
+                v_a = ec["A"][:, j].var(axis=0, ddof=1)
+                v_d = ec["D"][:, j].var(axis=0, ddof=1)
+                large = layout.side_of_block >= 256
+                est_a, var_a = out[("A", c)]
+                out[("B", c)] = (est_a, var_a + v_a)
+                est_d, var_d = out[("D", c)]
+                out[("D", c)] = (est_d, var_d + np.where(large, v_d, v_a))
             diags[j] |= {
                 "boot_var_share_land": float(v_sh[-1]),
                 "boot_var_ok_land": float(v_es[-1]),
