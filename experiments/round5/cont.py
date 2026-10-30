@@ -53,7 +53,7 @@ CONT_MAPS = {
 }
 ALL_ARMS = (
     "current", "ok", "ok_e", "ok_m", "ok_eb", "fam_es", "cap", "sw", "vparam", "current_cb",
-    "ok_cb", "oracle_zero", "oracle_ok", "ppi",
+    "ok_cb", "oracle_zero", "oracle_ok", "ppi", "A", "B", "D",
 )  # fmt: skip
 
 
@@ -270,6 +270,30 @@ def realization(
                     out["oracle_zero"] = (share, vbo)
                     ro = corrected([np.ones(ls.m.size)], ko, vbo, ar.gls_factor(oracle(), x, y))
                     out["oracle_ok"] = (ro.est, ro.var)
+                g_combo: dict[str, np.ndarray] = {}
+                if arms & {"A", "B", "D"}:
+                    if sh.family(m1) in ("Exp", "Sph", "Nug"):
+                        m_a, r_a = m1, ok
+                    else:
+                        m_a, _ = fit(zs, xs, ys, mean="constant", models=("Exp", "Sph"))
+                        r_a = ok_with(m_a)
+                    var_a = r_a.var
+                    if n <= vmax and not (f0 or f1) and sh.family(m_a) != "Nug":
+                        pts, w, code, _st = ar.sigma_points(zs, xs, ys, m_a)
+                        if len(pts) > 1:
+                            res = [r_a] + [ok_with(ar.model_of(code, pt)) for pt in pts[1:]]
+                            E = np.stack([q.est for q in res])
+                            V = np.stack([q.var for q in res])
+                            var_a = w @ V + w @ (E - r_a.est) ** 2
+                    out["A"] = (r_a.est, var_a)
+                    out["B"] = out["A"]
+                    try:
+                        r_d = ok_with(wls(sigma_weighted(pairs(xs, ys), ev[sub], sd[c][sub])))
+                    except Exception:
+                        r_d = r_a
+                    large = layout.side_of_block >= 256
+                    out["D"] = (np.where(large, r_d.est, r_a.est), np.where(large, r_d.var, var_a))
+                    g_combo = {"A": r_a.gls.G[0], "D": r_d.gls.G[0]}
                 if "ppi" in arms:
                     est = np.full(nb, np.nan)
                     var = np.full(nb, np.nan)
@@ -282,7 +306,7 @@ def realization(
                         rbar, se = ar.ppi_block(ev[inside], clusters[design][:n][inside])
                         est[b], var[b] = rbar, se**2
                     out["ppi"] = (est, var)
-                if recal and boot > 1 and arms & {"current_cb", "ok_cb"}:
+                if recal and boot > 1 and arms & {"current_cb", "ok_cb", "B", "D"}:
                     cc = cal_cells[design][:n]
                     e_cal = struct[cc] + ls.sd_true[cc] * sd_n * cal_eps[design][:n] + bias[cc]
                     _, inv = np.unique(cal_clusters[design][:n], return_inverse=True)
@@ -291,6 +315,7 @@ def realization(
                     )
                     rngb = np.random.default_rng([sh.SEED, 12, r, di, ni])
                     bsh, es = np.empty((boot, nb)), np.empty((boot, nb))
+                    ec = {k: np.empty((boot, nb)) for k in g_combo}
                     xb_unit = bmat @ sd_user
                     for b in range(boot):
                         idx = np.concatenate(
@@ -303,8 +328,16 @@ def realization(
                         bsh[b] = (bmat @ shift_map) - (bmat @ (bb0 + bb1 * ls.m))
                         zb = (e_pts - (bb0 + bb1 * ls.m[c])) / (cb * sd_user[c])
                         es[b] = bsh[b] - cb * xb_unit * float(ok.gls.G[0] @ zb)  # error − estimate
+                        for k, g in g_combo.items():
+                            ec[k][b] = bsh[b] - cb * xb_unit * float(g @ zb)
                     out["current_cb"] = (share, vb0 + bsh.var(axis=0, ddof=1))
                     out["ok_cb"] = (ok.est, ok.var + es.var(axis=0, ddof=1))
+                    if g_combo:
+                        v_a = ec["A"].var(axis=0, ddof=1)
+                        v_d = ec["D"].var(axis=0, ddof=1)
+                        large = layout.side_of_block >= 256
+                        out["B"] = (out["A"][0], out["A"][1] + v_a)
+                        out["D"] = (out["D"][0], out["D"][1] + np.where(large, v_d, v_a))
             d |= {"warnings": len(caught), "seconds": time.time() - t0}
             diags.append(d)
             for arm, (est, var) in out.items():
