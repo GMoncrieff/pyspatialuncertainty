@@ -78,7 +78,10 @@ def _bounds(rule: str) -> tuple[pl.Expr, pl.Expr]:
     return (th - hw_a).clip(0, math.pi / 2).sin() ** 2, (th + hw_a).clip(0, math.pi / 2).sin() ** 2
 
 
-def load(run_dir: Path, side: int, map_name: str, rules: tuple[str, ...]) -> pl.DataFrame:
+def load(
+    run_dir: Path, side: int, map_name: str, rules: tuple[str, ...], bounded: bool = True
+) -> pl.DataFrame:
+    """One map's rows with the truth; ``bounded`` flags estimates outside [0, 1] (shares)."""
     files = sorted((run_dir / str(side) / map_name).glob("r*.parquet"))
     df = pl.concat([pl.read_parquet(f) for f in files], how="vertical_relaxed")
     truth = df.filter(pl.col("arm") == "truth")
@@ -97,7 +100,7 @@ def load(run_dir: Path, side: int, map_name: str, rules: tuple[str, ...]) -> pl.
     return df.with_columns(
         *covers,
         resid=pl.col("truth") - pl.col("est"),
-        out=(pl.col("est") < 0) | (pl.col("est") > 1),
+        out=((pl.col("est") < 0) | (pl.col("est") > 1)) & bounded,
     ).with_columns(az=(pl.col("resid") / pl.col("sd")).abs())
 
 
@@ -244,7 +247,7 @@ def main() -> None:
     for side in (int(s) for s in a.sides.split(",")):
         for m in a.maps.split(","):
             if (run_dir / str(side) / m).exists():
-                frames.append(load(run_dir, side, m, rules))
+                frames.append(load(run_dir, side, m, rules, a.kind == "class"))
     df = pl.concat(frames, how="vertical_relaxed")
     cl = cells(df, rules)
     pr = per_r(df, rules)
