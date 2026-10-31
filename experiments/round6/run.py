@@ -189,16 +189,20 @@ class ClassSetting:
         if key in self.unc:
             return self.unc[key]
         f = self.fit(label)
-        base = self.corrected(label, x2)
+        designs = sorted(set(self.designs.get(label, ())) | {x2})  # one factorization each
+        bases = {des: self.corrected(label, des) for des in designs}
         pts, w, status = (fits.laplace if unc == "vp" else fits.grid_posterior)(f)
         if len(pts) <= 1 or f.corr_of is None:
-            self.unc[key] = (base.var, status)
+            for des in designs:
+                self.unc[(label, des, unc)] = (bases[des].var, status)
             return self.unc[key]
         first = 1 if unc == "vp" else 0  # Laplace points start at the fit itself
-        res = [base] * first + [self.evaluate(f.corr_of(pt), [x2])[0] for pt in pts[first:]]
-        E = np.stack([q.est for q in res])
-        V = np.stack([q.var for q in res])
-        self.unc[key] = (w @ V + w @ (E - base.est) ** 2, status)
+        res = [self.evaluate(f.corr_of(pt), designs) for pt in pts[first:]]
+        for k, des in enumerate(designs):
+            per = [bases[des]] * first + [r[k] for r in res]
+            E = np.stack([q.est for q in per])
+            V = np.stack([q.var for q in per])
+            self.unc[(label, des, unc)] = (w @ V + w @ (E - bases[des].est) ** 2, status)
         return self.unc[key]
 
 
