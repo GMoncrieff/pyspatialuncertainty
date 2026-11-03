@@ -222,8 +222,13 @@ def setting(
     *,
     calib: tuple[str, np.ndarray, dict] | None,
     rng: np.random.Generator,
+    n_cal: int | None = None,
+    classes: tuple[str, ...] = sh.CLASSES,
 ) -> tuple[dict[tuple[str, str], tuple[np.ndarray, np.ndarray]], list[dict[str, object]]]:
+    """All arms for one (design, n) on one realization; the calibration sample has ``n_cal``
+    points (default n) and the map ``pf`` one row per class of ``classes``."""
     layout = w.layout
+    n_cal = n if n_cal is None else n_cal
     bmat = layout.bmat
     nb = layout.n_blocks
     specs = {a: parse(a) for a in arms if a != "olofsson"}
@@ -239,7 +244,7 @@ def setting(
     out: dict[tuple[str, str], tuple[np.ndarray, np.ndarray]] = {}
     diags: list[dict[str, object]] = []
     settings: list[ClassSetting] = []
-    for j, c in enumerate(sh.CLASSES):
+    for j, c in enumerate(classes):
         t0 = time.time()
         d: dict[str, object] = {"design": design, "n": n, "cls": c, "phi": phi}
         sd = sd_all[j]
@@ -263,7 +268,7 @@ def setting(
         if "olofsson" in arms and design == "random":
             mc = np.argmax(pf, axis=0)
             e, se = sh.olofsson_landscape(
-                np.bincount(mc, minlength=3) / mc.size, mc[cells], lab == j
+                np.bincount(mc, minlength=len(classes)) / mc.size, mc[cells], lab == j
             )
             est = np.full(nb, np.nan)
             var = np.full(nb, np.nan)
@@ -278,9 +283,9 @@ def setting(
     t0 = time.time()
     kind, lp, par0 = calib
     fit_cal, apply_cal = sh.CALIBRATORS[kind]
-    cc_ = dr.cal_cells[design][:n]
-    cl = dr.cal_labels[design][:n]
-    clus = dr.cal_clusters[design][:n]
+    cc_ = dr.cal_cells[design][:n_cal]
+    cl = dr.cal_labels[design][:n_cal]
+    clus = dr.cal_clusters[design][:n_cal]
     xc, yc = layout.cx[cc_], layout.cy[cc_]
     for ck in sorted({s.cal for s in cal_arms.values()}):
         group = {a: s for a, s in cal_arms.items() if s.cal == ck}
@@ -302,7 +307,7 @@ def setting(
                 for idx in (cb.resample(ck, clus, rng) for _ in range(cb.N_DRAWS))
             ]
             by_fit = dict.fromkeys(fls, pars)
-        draws = {a: np.empty((cb.N_DRAWS, len(sh.CLASSES), nb)) for a in group}
+        draws = {a: np.empty((cb.N_DRAWS, len(classes), nb)) for a in group}
         for fl, plist in by_fit.items():
             members = {a: s for a, s in group.items() if s.fit == fl}
             for b, par in enumerate(plist):
@@ -319,7 +324,7 @@ def setting(
                         )
                         draws[a][b, j] = bsh + shift
         for a in group:
-            for j, c in enumerate(sh.CLASSES):
+            for j, c in enumerate(classes):
                 v = draws[a][:, j].var(axis=0, ddof=1)
                 est, var = out[(a, c)]
                 out[(a, c)] = (est, var + v)

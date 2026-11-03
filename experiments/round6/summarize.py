@@ -104,8 +104,8 @@ def load(
     ).with_columns(az=(pl.col("resid") / pl.col("sd")).abs())
 
 
-def cells(df: pl.DataFrame, rules: tuple[str, ...]) -> pl.DataFrame:
-    keys = ["arm", *DIMS]
+def cells(df: pl.DataFrame, rules: tuple[str, ...], dims: tuple[str, ...] = DIMS) -> pl.DataFrame:
+    keys = ["arm", *dims]
     return df.group_by(keys).agg(
         pl.len().alias("n_rows"),
         pl.col("r").n_unique().alias("n_real"),
@@ -117,9 +117,9 @@ def cells(df: pl.DataFrame, rules: tuple[str, ...]) -> pl.DataFrame:
     )
 
 
-def per_r(df: pl.DataFrame, rules: tuple[str, ...]) -> pl.DataFrame:
+def per_r(df: pl.DataFrame, rules: tuple[str, ...], dims: tuple[str, ...] = DIMS) -> pl.DataFrame:
     """Coverage per cell and realization (mean over the cell's blocks), for the bootstrap."""
-    return df.group_by(["arm", *DIMS, "r"]).agg(
+    return df.group_by(["arm", *dims, "r"]).agg(
         *[pl.col(f"cov_{rule}").mean().alias(f"cov_{rule}") for rule in rules]
     )
 
@@ -130,12 +130,14 @@ def noise_floor(n_real: int) -> float:
     return float(np.sum(stats.binom.pmf(k, n_real, LEVEL) * np.abs(k / n_real - LEVEL)))
 
 
-def universal(cl: pl.DataFrame, arm: str, rule: str, ref: str = "ok") -> dict[str, object]:
+def universal(
+    cl: pl.DataFrame, arm: str, rule: str, ref: str = "ok", dims: tuple[str, ...] = DIMS
+) -> dict[str, object]:
     a = cl.filter(pl.col("arm") == arm)
     if a.height == 0:
         return {}
     err = (pl.col(f"cov_{rule}") - LEVEL).abs()
-    keys = list(DIMS)
+    keys = list(dims)
     o = cl.filter(pl.col("arm") == ref).select(*keys, pl.col("mae").alias("mae_ref"))
     acc = a.join(o, on=keys).select((pl.col("mae") / pl.col("mae_ref")).median()).item()
     land = a.filter(pl.col("bside") == pl.col("side"))
@@ -150,17 +152,23 @@ def universal(cl: pl.DataFrame, arm: str, rule: str, ref: str = "ok") -> dict[st
         "out_land": int(land["n_out"].sum()),
         "wild_land": int(land["n_wild"].sum()),
     }
-    for dim in DIMS:
+    for dim in dims:
         g = a.group_by(dim).agg(err.mean().alias("e")).sort(dim)
         row[f"by_{dim}"] = {str(k): float(v) for k, v in zip(g[dim], g["e"], strict=True)}
     return row
 
 
 def paired_ci(
-    pr: pl.DataFrame, arm: str, rule: str, base: str, base_rule: str, n_boot: int = 400
+    pr: pl.DataFrame,
+    arm: str,
+    rule: str,
+    base: str,
+    base_rule: str,
+    n_boot: int = 400,
+    dims: tuple[str, ...] = DIMS,
 ) -> tuple[float, float]:
     """Paired bootstrap 90 % interval (over realizations) of err(arm, rule) − err(base)."""
-    keys = list(DIMS)
+    keys = list(dims)
 
     def matrix(name: str, rl: str) -> tuple[np.ndarray, list[int]]:
         w = (
@@ -187,10 +195,12 @@ def paired_ci(
     return float(np.quantile(d, 0.05)), float(np.quantile(d, 0.95))
 
 
-def advance(row: dict, base: dict, ci: tuple[float, float]) -> dict[str, object]:
+def advance(
+    row: dict, base: dict, ci: tuple[float, float], dims: tuple[str, ...] = DIMS
+) -> dict[str, object]:
     worse = max(
         (row[f"by_{dim}"][k] - base[f"by_{dim}"][k])
-        for dim in DIMS
+        for dim in dims
         for k in row[f"by_{dim}"]
         if k in base[f"by_{dim}"]
     )

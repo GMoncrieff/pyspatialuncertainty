@@ -101,6 +101,7 @@ def class_world(n: int) -> ClassWorld:
 def class_draws(w: ClassWorld, r: int) -> sh.Draws:
     """``shared.class_draws`` on an n × n landscape (identical draws at n = 1024)."""
     sc = w.sc
+    k_cls = len(sc.prevalence)
     rng = np.random.default_rng(seed(w.n, 7, r))
     s = sc.sampler.sample(rng, 1)[0].ravel()
     sd_n = math.sqrt(sc.nugget)
@@ -110,10 +111,10 @@ def class_draws(w: ClassWorld, r: int) -> sh.Draws:
     frac = np.stack(
         [
             interval_probability((lim[j] - y_struct) / sd_n, (lim[j + 1] - y_struct) / sd_n)
-            for j in range(K)
+            for j in range(k_cls)
         ]
     )
-    truth = np.stack([w.layout.bmat @ frac[j] for j in range(K)])
+    truth = np.stack([w.layout.bmat @ frac[j] for j in range(k_cls)])
     n_max = max(sh.SIZES)
     cells, clusters = {}, {}
     for d in sh.DESIGNS:
