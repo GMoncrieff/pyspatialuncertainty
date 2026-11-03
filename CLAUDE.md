@@ -31,6 +31,35 @@ per class for class-probability maps (σ_k = √(p_k(1 − p_k))).
   and design-based arms) and the write-up in `experiments/improvements/README.md`.
 - `claude/round5-experiments` (off `ok`): round 5, `experiments/round5/` (harness with exact
   FFT V_B, `README.md`, `scorecard.md`). Results and the "Round 5 Ideas" report are not in the repo.
+- `claude/round6-experiments` (off round 5; the latest branch, start new work here): round 6,
+  `experiments/round6/` (landscape-size-generic test bed, threshold-shaped fit, design-free
+  calibrator draws, universal scorecard; `README.md`, `scorecard.md`). Results and the
+  "Round 6 Recipes" report (claude.ai artifact) are not in the repo. Package unchanged.
+
+## Current state (after round 6)
+
+Three class-map approaches are now the reference set (definitions in
+`experiments/round6/run.py`, arm grammar `fit+modifier+...`):
+
+- **`current`** (`cur`): the paper; zero-mean ML fit (free family), no mean correction,
+  variance V_B.
+- **`ok`** (`ok`): branch `ok`'s default; REML (free family Exp/Sph/Gau), GLS mean X = [1],
+  shift and added variance with cross term.
+- **R6 class** (`thr+x2+vp+disp+cg`, normal interval): threshold-shaped REML correlogram
+  (indicator correlation of a latent Exp field cut at the class's mean threshold,
+  t = Φ⁻¹(1 − p̄), via Owen's T; 2 parameters: latent nugget, latent range); GLS mean on
+  X = [1, σ]; Laplace sigma points of the REML fit at every n; all variances × the pooled
+  Brier ratio Σ(y − p)²/Σp(1 − p); calibrator uncertainty by 50 pair-correlation sandwich
+  draws (`calib.pair_weights`: Thomas-process fit to the excess of the calibration sample's
+  pair distances over a simple random sample of cells; no cluster IDs). Fit on ≤ 500 points;
+  GLS and exact FFT integrals on all points. Open: clip estimates to [0, 1]?
+- Strict variant meeting every pre-registered rule: `thr+vp+disp+cg` with the hybrid
+  interval (union of clipped normal and logit intervals).
+- Continuous recipe: `ok+x3+scale` (GLS mean on X = [1, 1/σ, m/σ], variances × REML sill).
+
+Round 6 universal error (mean |coverage − 0.90| over all cells; floor ≈ 0.04): class
+`cur` 0.127, `ok` 0.089, R6 class 0.042 (strict 0.052); continuous `ok` 0.070, R6 0.028.
+All of it on one simulator family, so robustness is the open question.
 
 ## Working conventions (from the user)
 
@@ -45,6 +74,24 @@ per class for class-probability maps (σ_k = √(p_k(1 − p_k))).
 - Reports are standalone HTML artifacts with many figures; prose plain and short,
   numbers checked against the data before publishing.
 - No model identifiers in commits, docs or artifacts.
+- Methods must be universal (round 6 onward): one fixed configuration for class maps and one
+  for continuous maps; nothing may switch on block size, landscape size, sample size,
+  sampling design or map scenario. The recipe may not use cluster IDs or design labels.
+- Evaluate with the universal scorecard (`experiments/round6/summarize.py`): every cell
+  equally weighted, marginals per dimension, worst cell, the binomial noise floor, paired
+  bootstrap CIs over shared realizations; pre-register the advance rule.
+
+## Operations (cloud sessions)
+
+- 4 cores, 15 GB. A round-6 class task (one map × realization, 6 settings) takes 6–10 min at
+  1024² and 3–5 min at 256²; the n = 5,000 GLS Cholesky (~2.5 s per correlogram) dominates,
+  so landscape size matters less than the number of correlograms evaluated at n = 5,000.
+- Run long jobs detached (`setsid nohup`), resumable (skip existing parquets), one process
+  per task (`max_tasks_per_child=1`), BLAS pinned to one thread. Keep a harness-tracked
+  background waiter (≤ 2 h, re-armed when it expires) so the container is not reclaimed.
+  Worker restarts happen; detached runs survive them.
+- The scratchpad is per session: results do not carry over to a new session. Commit the
+  scorecard markdown (not data) and rerun if raw results are needed.
 
 ## Lessons from simulations with known truth
 
@@ -112,12 +159,44 @@ design-weighted Dirichlet calibrator with spatially cross-fitted out-of-fold p.
   X = 1/σ fixes a constant continuous offset but breaks a σ-shaped one.
 - Temperature recalibration (M3) stays the worst case: rare class at 5,000 random points
   covers 6 % at the landscape.
+- Superseded by round 6's universality rule: block-size-specific logit intervals and
+  σσ-weighted fits, and the n-capped parameter uncertainty, are no longer allowed.
+
+## Lessons from round 6 (universal recipes; 1024² and 256², M1–M7, C1–C4)
+
+- **Correlogram shape.** The class-indicator correlogram falls fast over the first cells
+  and then decays with the latent range. With clustered samples REML fitted the fast part
+  and missed the tail (fitted V_B at 256×256 ≈ 0.5 × truth). The threshold-shaped family has
+  both parts built in (0.5 → 0.8 of truth); Exp alone is better than Sph or Exp/Sph; a free
+  second exponential overshoots up to 16×. With 50 points every fit overstates V_B 2–4×.
+- **Mean shape.** X = [1, σ] (logit-offset shape) was the largest class gain (−0.028) and
+  cut wild estimates sharply, but gives ~1 % of landscape estimates outside [0, 1]. For
+  continuous maps X = [1, 1/σ, m/σ] absorbs a linear recalibration exactly, so calibrator
+  draws add nothing on top of it.
+- **Variance scale.** REML sill (continuous, −0.033) and pooled Brier ratio (class, −0.017)
+  fix mis-scaled σ / overconfident probabilities, including uncorrected maps.
+- **Calibrator draws.** The model sandwich using the fitted field correlation between
+  calibration points overstates the variance 4–9× (the field also drives the truth). The
+  conditional (design) variance is what helps; the pair-correlation sandwich recovers the
+  cluster bootstrap within 3 % from coordinates alone. Pitfalls found on the way: compare
+  against the lattice (discrete) null, not continuous CSR; pair counts vary like a
+  U-statistic, so simulate the null covariance; restrict the cluster scale to ≤ 1/16 of the
+  side. Dense overlapping clusters (5,000 points on 256²) are undercounted (~¼). All
+  calibrator methods gave similar coverage gains (−0.004 to −0.008).
+- **Rejected:** grid-posterior sigma points (lower small-block coverage), logit and arcsine
+  intervals (shares at or near 0/1 in small tiles). The hybrid interval helps without X = [1, σ]
+  and is neutral with it.
+- **Residual failures:** rare class on the uncorrected map M7 (worst cells 50–67 % for R6
+  class, 3 % for `ok`). Olofsson stays strong at the landscape with random samples (0.060).
+- **Caveat:** the class simulator is itself a thresholded latent Gaussian, which favours the
+  threshold-shaped fit. Robustness to other generators is untested.
 
 ## Open next steps
 
-- Package proposals awaiting approval: calibrator bootstrap variance, Exp/Sph-only REML
-  for class maps, a sigma-point parameter-uncertainty option, logit intervals for large blocks.
-- A large-block correlogram fit that keeps the GLS mean stable.
-- Exact V_B (FFT cell sums) in the package for large validation sets.
-- A design-weighted or strata-aware mean in the package (`X` design in the GLS).
-- Class-map `ok` with exact V_B; the σσ-weighted correlogram for rare classes.
+- Robustness study (next): `current`, `ok` and R6 class under other class-map generators
+  (not thresholded Gaussians), landscape structures, landscape sizes and amounts of
+  calibration/training data.
+- Package proposals awaiting approval (defaults unchanged): the R6 class recipe (with or
+  without clipping estimates to [0, 1]) and the continuous recipe `ok+x3+scale`.
+- Rare class on uncorrected maps; design-weighted or strata-aware GLS mean for unequal-
+  probability samples (thicket lesson); exact V_B (FFT) in the package.
